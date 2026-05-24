@@ -1,0 +1,4 @@
+name: cosmos-vector-bench-infra
+infra:
+  path: .
+  module: main
