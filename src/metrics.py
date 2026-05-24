@@ -243,7 +243,7 @@ def _record_upload_started(metrics: dict, started_at: float, started_epoch: floa
         metrics["started_at"] = started_at
         metrics["started_epoch"] = started_epoch
         metrics["throughput_last_sample_at"] = started_at
-        metrics["throughput_last_sample_completed"] = _completed_docs(metrics)
+        metrics["throughput_last_sample_success"] = metrics["success"]
         metrics["throughput_last_sample_create_item_attempts"] = metrics["create_item_attempts"]
         metrics["partition_key_range_last_sample_counts"] = dict(metrics["partition_key_range_request_counts"])
         metrics["partition_key_range_last_sample_ru_totals"] = dict(metrics["partition_key_range_ru_totals"])
@@ -275,14 +275,14 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
         return
 
     now = time.perf_counter() if now is None else now
-    completed = _completed_docs(metrics)
+    successful = metrics["success"]
     create_item_attempts = metrics["create_item_attempts"]
     partition_key_range_counts = metrics["partition_key_range_request_counts"]
     partition_key_range_ru_totals = metrics["partition_key_range_ru_totals"]
     last_sample_at = metrics.get("throughput_last_sample_at")
     if last_sample_at is None:
         metrics["throughput_last_sample_at"] = now
-        metrics["throughput_last_sample_completed"] = completed
+        metrics["throughput_last_sample_success"] = successful
         metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
         metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
@@ -290,7 +290,7 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
 
     if not _after_warmup(metrics, now):
         metrics["throughput_last_sample_at"] = now
-        metrics["throughput_last_sample_completed"] = completed
+        metrics["throughput_last_sample_success"] = successful
         metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
         metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
@@ -300,7 +300,7 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
 
     if not _after_warmup(metrics, last_sample_at):
         metrics["throughput_last_sample_at"] = now
-        metrics["throughput_last_sample_completed"] = completed
+        metrics["throughput_last_sample_success"] = successful
         metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
         metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
@@ -312,10 +312,10 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
     if elapsed < METRICS_SAMPLE_INTERVAL_SEC and not force:
         return
 
-    completed_delta = completed - metrics.get("throughput_last_sample_completed", completed)
+    successful_delta = successful - metrics.get("throughput_last_sample_success", successful)
     create_item_attempts_delta = create_item_attempts - metrics.get("throughput_last_sample_create_item_attempts", create_item_attempts)
-    if elapsed > 0 and completed_delta > 0:
-        metrics["throughput_docs_per_sec_samples"].append(completed_delta / elapsed)
+    if elapsed > 0:
+        metrics["throughput_docs_per_sec_samples"].append(successful_delta / elapsed)
     if elapsed > 0 and create_item_attempts_delta > 0:
         metrics["insert_requests_per_sec_samples"].append(create_item_attempts_delta / elapsed)
     if PARTITION_KEY_RANGE_RPS_ENABLED and elapsed > 0:
@@ -333,7 +333,7 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
         }
 
     metrics["throughput_last_sample_at"] = now
-    metrics["throughput_last_sample_completed"] = completed
+    metrics["throughput_last_sample_success"] = successful
     metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
     metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
     metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
@@ -373,7 +373,7 @@ def _samples_or_fallback(samples: list[float], fallback: float) -> list[float]:
 def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, worker_index: int) -> dict:
     elapsed = _elapsed_upload_time(metrics, live=True)
     completed = _completed_docs(metrics)
-    current_throughput = metrics["throughput_docs_per_sec_samples"][-1] if metrics["throughput_docs_per_sec_samples"] else _safe_div(completed, elapsed)
+    current_throughput = metrics["throughput_docs_per_sec_samples"][-1] if metrics["throughput_docs_per_sec_samples"] else _safe_div(metrics["success"], elapsed)
     throughput_samples = _samples_or_fallback(metrics["throughput_docs_per_sec_samples"], current_throughput)
     current_insert_requests_per_sec = metrics["insert_requests_per_sec_samples"][-1] if metrics["insert_requests_per_sec_samples"] else _safe_div(metrics["create_item_attempts"], elapsed)
     insert_request_samples = _samples_or_fallback(metrics["insert_requests_per_sec_samples"], current_insert_requests_per_sec)
@@ -450,7 +450,7 @@ def _result_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
     total_finished_at = time.perf_counter()
     total_elapsed_time_sec = max(total_finished_at - metrics["total_started_at"], 0.000001)
     completed = _completed_docs(metrics)
-    fallback_throughput = _safe_div(completed, insert_time_sec)
+    fallback_throughput = _safe_div(metrics["success"], insert_time_sec)
     fallback_insert_requests_per_sec = _safe_div(metrics["create_item_attempts"], insert_time_sec)
     throughput_samples = _samples_or_fallback(metrics["throughput_docs_per_sec_samples"], fallback_throughput)
     insert_request_samples = _samples_or_fallback(metrics["insert_requests_per_sec_samples"], fallback_insert_requests_per_sec)
@@ -554,7 +554,7 @@ def _new_metrics() -> dict:
         "finished_at": None,
         "finished_epoch": None,
         "throughput_last_sample_at": None,
-        "throughput_last_sample_completed": 0,
+        "throughput_last_sample_success": 0,
         "throughput_last_sample_create_item_attempts": 0,
         "throughput_docs_per_sec_samples": [],
         "insert_requests_per_sec_samples": [],
@@ -690,7 +690,7 @@ def _print_parent_result(
     total_elapsed_time_sec = total_elapsed_time_sec if total_elapsed_time_sec is not None else insert_time_sec
     other_overhead_sec = total_elapsed_time_sec - insert_time_sec - data_load_time_sec
     completed_clients = len(results)
-    fallback_throughput = _safe_div(docs_completed, insert_time_sec)
+    fallback_throughput = _safe_div(success_total, insert_time_sec)
     fallback_insert_requests_per_sec = _safe_div(create_item_attempts, insert_time_sec)
     throughput_samples = _samples_or_fallback(_aggregate_throughput_samples(results), fallback_throughput)
     insert_request_samples = _samples_or_fallback(_aggregate_insert_request_samples(results), fallback_insert_requests_per_sec)

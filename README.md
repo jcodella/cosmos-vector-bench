@@ -304,7 +304,7 @@ During runs, watch these final CSV fields. Terminal live output uses the same co
 
 - `avg_ru_per_operation`: actual average RU charged per write.
 - `throttles_total`: if this rises, the workload is exceeding available RU or hitting partition limits.
-- `throughput_docs_per_sec_min` / `throughput_docs_per_sec_mean` / `throughput_docs_per_sec_median` / `throughput_docs_per_sec_max`: Sampled document throughput after warmup.
+- `throughput_docs_per_sec_min` / `throughput_docs_per_sec_mean` / `throughput_docs_per_sec_median` / `throughput_docs_per_sec_max`: sampled successful insert throughput after warmup.
 - `insert_requests_per_sec_min` / `insert_requests_per_sec_mean` / `insert_requests_per_sec_median` / `insert_requests_per_sec_max`: sampled `create_item` request-attempt throughput. Retries count as additional insert requests.
 - `insert_requests_per_sec_per_client_mean`: sampled `create_item` request-attempt throughput divided by configured client count.
 - `Partition key range stats`: live terminal-only diagnostics enabled by `PARTITION_KEY_RANGE_RPS_ENABLED=true`. For each observed range, prints one line like `pkrange_0=ops/sec=500.00, ru/sec=40000.00`.
