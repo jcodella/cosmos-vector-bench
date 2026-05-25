@@ -394,7 +394,7 @@ async def insert_doc(container, sem: asyncio.Semaphore, doc: dict, metrics: dict
                         The enclosing retry loop uses these per-attempt values for RU accounting and optional range diagnostics.
                         """
                         nonlocal attempt_request_charge, attempt_partition_key_range_id
-                        if CAPTURE_RU_CHARGES or PARTITION_KEY_RANGE_RPS_ENABLED:
+                        if CAPTURE_RU_CHARGES:
                             attempt_request_charge = _request_charge_from_headers(headers)
                         if PARTITION_KEY_RANGE_RPS_ENABLED:
                             attempt_partition_key_range_id = _partition_key_range_id_from_headers(headers)
@@ -411,7 +411,7 @@ async def insert_doc(container, sem: asyncio.Semaphore, doc: dict, metrics: dict
                     finish = time.perf_counter()
                     finish_epoch = time.time()
                     attempt_windows.append((attempt_start, finish))
-                    _record_partition_key_range_request(metrics, attempt_partition_key_range_id, attempt_request_charge)
+                    _record_partition_key_range_request(metrics, attempt_partition_key_range_id)
                     if CAPTURE_RU_CHARGES:
                         request_charge_total += attempt_request_charge
 
@@ -428,10 +428,7 @@ async def insert_doc(container, sem: asyncio.Semaphore, doc: dict, metrics: dict
                         attempt_partition_key_range_id = _partition_key_range_id_from_headers(_headers_from_exception(exc))
                     if CAPTURE_RU_CHARGES:
                         request_charge_total += attempt_request_charge or _request_charge_from_exception(exc)
-                    range_request_charge = attempt_request_charge
-                    if PARTITION_KEY_RANGE_RPS_ENABLED and range_request_charge <= 0:
-                        range_request_charge = _request_charge_from_exception(exc)
-                    _record_partition_key_range_request(metrics, attempt_partition_key_range_id, range_request_charge)
+                    _record_partition_key_range_request(metrics, attempt_partition_key_range_id)
 
                     if getattr(exc, "status_code", None) == 429:
                         metrics["throttles"] += 1
@@ -753,6 +750,7 @@ async def run_parent() -> None:
     latest_metrics: dict[int, dict] = {}
     results: dict[int, dict] = {}
     errors: dict[int, str] = {}
+    aggregate_throughput_samples: list[float] = []
     metric_queue = mp.Queue()
     processes: dict[int, mp.Process] = {}
     total_started_at = time.perf_counter()
@@ -770,7 +768,7 @@ async def run_parent() -> None:
     try:
         while True:
             _drain_metric_queue(metric_queue, latest_metrics, results, errors)
-            line = _aggregate_line(latest_metrics, EFFECTIVE_TOTAL_DOCS, CLIENT_PROCESSES)
+            line = _aggregate_line(latest_metrics, EFFECTIVE_TOTAL_DOCS, CLIENT_PROCESSES, aggregate_throughput_samples)
             last_len = _print_live_line(line, last_len)
 
             if not any(process.is_alive() for process in processes.values()):
@@ -787,7 +785,7 @@ async def run_parent() -> None:
         process.join()
 
     _drain_metric_queue(metric_queue, latest_metrics, results, errors)
-    line = _aggregate_line(latest_metrics, EFFECTIVE_TOTAL_DOCS, CLIENT_PROCESSES)
+    line = _aggregate_line(latest_metrics, EFFECTIVE_TOTAL_DOCS, CLIENT_PROCESSES, aggregate_throughput_samples)
     _print_live_line(line, last_len, final=True)
 
     return_codes = [process.exitcode if process.exitcode is not None else -1 for process in processes.values()]
@@ -817,6 +815,7 @@ async def run_json_parent() -> None:
     latest_metrics: dict[int, dict] = {}
     results: dict[int, dict] = {}
     errors: dict[int, str] = {}
+    aggregate_throughput_samples: list[float] = []
     metric_queue = mp.Queue()
     queue_max_docs = CLIENT_PROCESSES * BULK_SIZE * DOC_QUEUE_MULTIPLIER
     queue_maxsize = max(1, (queue_max_docs + READ_BATCH_SIZE - 1) // READ_BATCH_SIZE)
@@ -850,6 +849,7 @@ async def run_json_parent() -> None:
                 latest_metrics,
                 MAX_TOTAL_DOCS or (producer_status.get("docs_read") if producer_status.get("finished") else None),
                 CLIENT_PROCESSES,
+                aggregate_throughput_samples,
             )
             last_len = _print_live_line(line, last_len)
 
@@ -874,6 +874,7 @@ async def run_json_parent() -> None:
         latest_metrics,
         producer_status.get("docs_read"),
         CLIENT_PROCESSES,
+        aggregate_throughput_samples,
     )
     _print_live_line(line, last_len, final=True)
 

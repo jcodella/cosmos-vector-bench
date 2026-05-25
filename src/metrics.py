@@ -65,22 +65,12 @@ FINAL_METRIC_SECTIONS = {
         "docs_completed",
     ),
     "Throughput": (
-        "throughput_docs_per_sec_min",
-        "throughput_docs_per_sec_mean",
-        "throughput_docs_per_sec_median",
+        "throughput_docs_per_sec_current",
+        "throughput_docs_per_sec_per_client_current",
+        "throughput_docs_per_sec_p50",
+        "throughput_docs_per_sec_p90",
+        "throughput_docs_per_sec_p99",
         "throughput_docs_per_sec_max",
-        "throughput_docs_per_sec_per_client_min",
-        "throughput_docs_per_sec_per_client_mean",
-        "throughput_docs_per_sec_per_client_median",
-        "throughput_docs_per_sec_per_client_max",
-        "insert_requests_per_sec_min",
-        "insert_requests_per_sec_mean",
-        "insert_requests_per_sec_median",
-        "insert_requests_per_sec_max",
-        "insert_requests_per_sec_per_client_min",
-        "insert_requests_per_sec_per_client_mean",
-        "insert_requests_per_sec_per_client_median",
-        "insert_requests_per_sec_per_client_max",
     ),
     "Timing": (
         "service_time_ms_p50",
@@ -169,19 +159,6 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
-def _mean(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def _median(sorted_values: list[float]) -> float:
-    if not sorted_values:
-        return 0.0
-    midpoint = len(sorted_values) // 2
-    if len(sorted_values) % 2:
-        return sorted_values[midpoint]
-    return (sorted_values[midpoint - 1] + sorted_values[midpoint]) / 2
-
-
 def _percentile(sorted_values: list[float], ratio: float) -> float:
     if not sorted_values:
         return 0.0
@@ -191,14 +168,18 @@ def _percentile(sorted_values: list[float], ratio: float) -> float:
     return sorted_values[index]
 
 
-def _throughput_summary(values: list[float], prefix: str) -> dict:
+def _throughput_percentile_summary(values: list[float], prefix: str) -> dict:
     sorted_values = sorted(values)
     return {
-        f"{prefix}_min": f"{(min(sorted_values) if sorted_values else 0.0):.2f}",
-        f"{prefix}_mean": f"{_mean(sorted_values):.2f}",
-        f"{prefix}_median": f"{_median(sorted_values):.2f}",
+        f"{prefix}_p50": f"{_percentile(sorted_values, 0.50):.2f}",
+        f"{prefix}_p90": f"{_percentile(sorted_values, 0.90):.2f}",
+        f"{prefix}_p99": f"{_percentile(sorted_values, 0.99):.2f}",
         f"{prefix}_max": f"{(max(sorted_values) if sorted_values else 0.0):.2f}",
     }
+
+
+def _float_throughput_percentile_summary(values: list[float], prefix: str) -> dict:
+    return {name: float(value) for name, value in _throughput_percentile_summary(values, prefix).items()}
 
 
 def _percentile_summary(values: list[float], prefix: str) -> dict:
@@ -225,7 +206,7 @@ def _record_create_item_failure(metrics: dict) -> None:
     metrics["create_item_failure_attempts"] += 1
 
 
-def _record_partition_key_range_request(metrics: dict, partition_key_range_id: str | None, request_charge: float = 0.0) -> None:
+def _record_partition_key_range_request(metrics: dict, partition_key_range_id: str | None) -> None:
     if not PARTITION_KEY_RANGE_RPS_ENABLED:
         return
     if not partition_key_range_id:
@@ -233,9 +214,6 @@ def _record_partition_key_range_request(metrics: dict, partition_key_range_id: s
         return
     counts = metrics["partition_key_range_request_counts"]
     counts[partition_key_range_id] = counts.get(partition_key_range_id, 0) + 1
-    if request_charge > 0:
-        ru_totals = metrics["partition_key_range_ru_totals"]
-        ru_totals[partition_key_range_id] = ru_totals.get(partition_key_range_id, 0.0) + request_charge
 
 
 def _record_upload_started(metrics: dict, started_at: float, started_epoch: float) -> None:
@@ -244,9 +222,7 @@ def _record_upload_started(metrics: dict, started_at: float, started_epoch: floa
         metrics["started_epoch"] = started_epoch
         metrics["throughput_last_sample_at"] = started_at
         metrics["throughput_last_sample_success"] = metrics["success"]
-        metrics["throughput_last_sample_create_item_attempts"] = metrics["create_item_attempts"]
         metrics["partition_key_range_last_sample_counts"] = dict(metrics["partition_key_range_request_counts"])
-        metrics["partition_key_range_last_sample_ru_totals"] = dict(metrics["partition_key_range_ru_totals"])
 
 
 def _record_upload_finished(metrics: dict, finished_at: float, finished_epoch: float) -> None:
@@ -276,36 +252,26 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
 
     now = time.perf_counter() if now is None else now
     successful = metrics["success"]
-    create_item_attempts = metrics["create_item_attempts"]
     partition_key_range_counts = metrics["partition_key_range_request_counts"]
-    partition_key_range_ru_totals = metrics["partition_key_range_ru_totals"]
     last_sample_at = metrics.get("throughput_last_sample_at")
     if last_sample_at is None:
         metrics["throughput_last_sample_at"] = now
         metrics["throughput_last_sample_success"] = successful
-        metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
-        metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
         return
 
     if not _after_warmup(metrics, now):
         metrics["throughput_last_sample_at"] = now
         metrics["throughput_last_sample_success"] = successful
-        metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
-        metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
         metrics["partition_key_range_requests_per_sec"] = {}
-        metrics["partition_key_range_ru_per_sec"] = {}
         return
 
     if not _after_warmup(metrics, last_sample_at):
         metrics["throughput_last_sample_at"] = now
         metrics["throughput_last_sample_success"] = successful
-        metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
         metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
-        metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
         metrics["partition_key_range_requests_per_sec"] = {}
-        metrics["partition_key_range_ru_per_sec"] = {}
         return
 
     elapsed = now - last_sample_at
@@ -313,30 +279,19 @@ def _record_throughput_sample(metrics: dict, *, now: float | None = None, force:
         return
 
     successful_delta = successful - metrics.get("throughput_last_sample_success", successful)
-    create_item_attempts_delta = create_item_attempts - metrics.get("throughput_last_sample_create_item_attempts", create_item_attempts)
     if elapsed > 0:
         metrics["throughput_docs_per_sec_samples"].append(successful_delta / elapsed)
-    if elapsed > 0 and create_item_attempts_delta > 0:
-        metrics["insert_requests_per_sec_samples"].append(create_item_attempts_delta / elapsed)
     if PARTITION_KEY_RANGE_RPS_ENABLED and elapsed > 0:
         last_range_counts = metrics.get("partition_key_range_last_sample_counts", {})
-        last_range_ru_totals = metrics.get("partition_key_range_last_sample_ru_totals", {})
         metrics["partition_key_range_requests_per_sec"] = {
             range_id: (count - last_range_counts.get(range_id, 0)) / elapsed
             for range_id, count in partition_key_range_counts.items()
             if count - last_range_counts.get(range_id, 0) > 0
         }
-        metrics["partition_key_range_ru_per_sec"] = {
-            range_id: (ru_total - last_range_ru_totals.get(range_id, 0.0)) / elapsed
-            for range_id, ru_total in partition_key_range_ru_totals.items()
-            if ru_total - last_range_ru_totals.get(range_id, 0.0) > 0
-        }
 
     metrics["throughput_last_sample_at"] = now
     metrics["throughput_last_sample_success"] = successful
-    metrics["throughput_last_sample_create_item_attempts"] = create_item_attempts
     metrics["partition_key_range_last_sample_counts"] = dict(partition_key_range_counts)
-    metrics["partition_key_range_last_sample_ru_totals"] = dict(partition_key_range_ru_totals)
 
 
 def _record_bulk_sample(
@@ -375,10 +330,9 @@ def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
     completed = _completed_docs(metrics)
     current_throughput = metrics["throughput_docs_per_sec_samples"][-1] if metrics["throughput_docs_per_sec_samples"] else _safe_div(metrics["success"], elapsed)
     throughput_samples = _samples_or_fallback(metrics["throughput_docs_per_sec_samples"], current_throughput)
-    current_insert_requests_per_sec = metrics["insert_requests_per_sec_samples"][-1] if metrics["insert_requests_per_sec_samples"] else _safe_div(metrics["create_item_attempts"], elapsed)
-    insert_request_samples = _samples_or_fallback(metrics["insert_requests_per_sec_samples"], current_insert_requests_per_sec)
     avg_ru_per_operation = _safe_div(metrics["request_charge_total"], metrics["request_charge_observations"])
     service_times = sorted(metrics["service_time_ms_samples"])
+    throughput_summary = _float_throughput_percentile_summary(throughput_samples, "throughput_docs_per_sec")
 
     return {
         "client_process_index": worker_index,
@@ -394,11 +348,9 @@ def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "create_item_attempts": metrics["create_item_attempts"],
         "create_item_failure_attempts": metrics["create_item_failure_attempts"],
         "throughput_docs_per_sec_current": current_throughput,
-        "throughput_docs_per_sec_mean": _mean(throughput_samples),
-        "insert_requests_per_sec_current": current_insert_requests_per_sec,
-        "insert_requests_per_sec_mean": _mean(insert_request_samples),
+        "throughput_docs_per_sec_per_client_current": _safe_div(current_throughput, max(client_count, 1)),
+        **throughput_summary,
         "partition_key_range_requests_per_sec": dict(metrics["partition_key_range_requests_per_sec"]),
-        "partition_key_range_ru_per_sec": dict(metrics["partition_key_range_ru_per_sec"]),
         "partition_key_range_missing_header_count": metrics["partition_key_range_missing_header_count"],
         "throughput_sample_count": len(metrics["throughput_docs_per_sec_samples"]),
         "service_time_p50_ms": _percentile(service_times, 0.50),
@@ -421,13 +373,17 @@ def _live_line(metrics: dict, total_docs: int | None, client_count: int, worker_
         f"value:completed={_format_completed(snapshot['completed'], total_docs)}",
         "section:Throughput",
         f"value:current_docs_per_sec={snapshot['throughput_docs_per_sec_current']:.2f}",
-        f"value:mean_docs_per_sec={snapshot['throughput_docs_per_sec_mean']:.2f}",
+        f"value:current_docs_per_sec_per_client={snapshot['throughput_docs_per_sec_per_client_current']:.2f}",
+        f"value:p50_docs_per_sec={snapshot['throughput_docs_per_sec_p50']:.2f}",
+        f"value:p90_docs_per_sec={snapshot['throughput_docs_per_sec_p90']:.2f}",
+        f"value:p99_docs_per_sec={snapshot['throughput_docs_per_sec_p99']:.2f}",
+        f"value:max_docs_per_sec={snapshot['throughput_docs_per_sec_max']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
         if snapshot["partition_key_range_requests_per_sec"]:
             for range_id, requests_per_sec in sorted(snapshot["partition_key_range_requests_per_sec"].items(), key=lambda item: item[0]):
-                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}, ru_per_sec={snapshot['partition_key_range_ru_per_sec'].get(range_id, 0.0):.2f}")
+                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}")
         else:
             lines.append("value:observed_ranges=0")
         lines.append(f"value:missing_header_count={snapshot['partition_key_range_missing_header_count']}")
@@ -451,9 +407,7 @@ def _result_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
     total_elapsed_time_sec = max(total_finished_at - metrics["total_started_at"], 0.000001)
     completed = _completed_docs(metrics)
     fallback_throughput = _safe_div(metrics["success"], insert_time_sec)
-    fallback_insert_requests_per_sec = _safe_div(metrics["create_item_attempts"], insert_time_sec)
     throughput_samples = _samples_or_fallback(metrics["throughput_docs_per_sec_samples"], fallback_throughput)
-    insert_request_samples = _samples_or_fallback(metrics["insert_requests_per_sec_samples"], fallback_insert_requests_per_sec)
     avg_ru_per_operation = _safe_div(metrics["request_charge_total"], metrics["request_charge_observations"])
 
     return {
@@ -474,7 +428,6 @@ def _result_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "create_item_attempts": metrics["create_item_attempts"],
         "create_item_failure_attempts": metrics["create_item_failure_attempts"],
         "throughput_docs_per_sec_samples": throughput_samples,
-        "insert_requests_per_sec_samples": insert_request_samples,
         "service_time_ms_samples": list(metrics["service_time_ms_samples"]),
         "throughput_sample_count": len(throughput_samples),
         "timing_sample_count": len(metrics["service_time_ms_samples"]),
@@ -513,8 +466,14 @@ def _common_final_metrics(result: dict) -> dict:
         "throughput_sample_count": result["throughput_sample_count"],
         "timing_sample_count": result["timing_sample_count"],
     }
-    metrics.update(_throughput_summary(result["throughput_docs_per_sec_samples"], "throughput_docs_per_sec"))
-    metrics.update(_throughput_summary(result["insert_requests_per_sec_samples"], "insert_requests_per_sec"))
+    current_throughput = result["throughput_docs_per_sec_samples"][-1] if result["throughput_docs_per_sec_samples"] else 0.0
+    metrics.update(
+        {
+            "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
+            "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(result['client_process_count'], 1)):.2f}",
+        }
+    )
+    metrics.update(_throughput_percentile_summary(result["throughput_docs_per_sec_samples"], "throughput_docs_per_sec"))
     metrics.update(_percentile_summary(result["service_time_ms_samples"], "service_time_ms"))
     return metrics
 
@@ -555,15 +514,10 @@ def _new_metrics() -> dict:
         "finished_epoch": None,
         "throughput_last_sample_at": None,
         "throughput_last_sample_success": 0,
-        "throughput_last_sample_create_item_attempts": 0,
         "throughput_docs_per_sec_samples": [],
-        "insert_requests_per_sec_samples": [],
         "partition_key_range_request_counts": {},
-        "partition_key_range_ru_totals": {},
         "partition_key_range_last_sample_counts": {},
-        "partition_key_range_last_sample_ru_totals": {},
         "partition_key_range_requests_per_sec": {},
-        "partition_key_range_ru_per_sec": {},
         "partition_key_range_missing_header_count": 0,
         "service_time_ms_samples": [],
         "bulk_timing_observations": 0,
@@ -594,7 +548,12 @@ def _result_elapsed(results: dict[int, dict]) -> float:
     return max(max(finished_epochs) - min(started_epochs), 0.000001)
 
 
-def _aggregate_line(latest_metrics: dict[int, dict], total_docs: int | None, client_processes: int) -> str:
+def _aggregate_line(
+    latest_metrics: dict[int, dict],
+    total_docs: int | None,
+    client_processes: int,
+    aggregate_throughput_samples: list[float] | None = None,
+) -> str:
     elapsed = _aggregate_elapsed(latest_metrics)
     active_clients = len(latest_metrics)
     success_total = sum(metric["success"] for metric in latest_metrics.values())
@@ -603,17 +562,16 @@ def _aggregate_line(latest_metrics: dict[int, dict], total_docs: int | None, cli
     completed_total = success_total + errors_total
     create_item_attempts = sum(metric.get("create_item_attempts", 0) for metric in latest_metrics.values())
     throughput_current = sum(metric.get("throughput_docs_per_sec_current", 0.0) for metric in latest_metrics.values())
-    throughput_mean = sum(metric.get("throughput_docs_per_sec_mean", 0.0) for metric in latest_metrics.values())
+    if aggregate_throughput_samples is not None and any(metric.get("started") for metric in latest_metrics.values()):
+        aggregate_throughput_samples.append(throughput_current)
+    throughput_summary = _float_throughput_percentile_summary(aggregate_throughput_samples or [], "throughput_docs_per_sec")
     partition_key_range_requests_per_sec = {}
-    partition_key_range_ru_per_sec = {}
     partition_key_range_missing_header_count = 0
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         for metric in latest_metrics.values():
             partition_key_range_missing_header_count += metric.get("partition_key_range_missing_header_count", 0)
             for range_id, requests_per_sec in metric.get("partition_key_range_requests_per_sec", {}).items():
                 partition_key_range_requests_per_sec[range_id] = partition_key_range_requests_per_sec.get(range_id, 0.0) + requests_per_sec
-            for range_id, ru_per_sec in metric.get("partition_key_range_ru_per_sec", {}).items():
-                partition_key_range_ru_per_sec[range_id] = partition_key_range_ru_per_sec.get(range_id, 0.0) + ru_per_sec
     request_charge_total = sum(metric.get("request_charge_total", 0.0) for metric in latest_metrics.values())
     request_charge_observations = sum(metric.get("request_charge_observations", 0) for metric in latest_metrics.values())
     avg_ru_per_operation = _safe_div(request_charge_total, request_charge_observations)
@@ -628,14 +586,17 @@ def _aggregate_line(latest_metrics: dict[int, dict], total_docs: int | None, cli
         f"value:completed={_format_completed(completed_total, total_docs)}",
         "section:Throughput",
         f"value:current_docs_per_sec_total={throughput_current:.2f}",
-        f"value:mean_docs_per_sec_total={throughput_mean:.2f}",
         f"value:current_docs_per_sec_per_client={_safe_div(throughput_current, max(client_processes, 1)):.2f}",
+        f"value:p50_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p50']:.2f}",
+        f"value:p90_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p90']:.2f}",
+        f"value:p99_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p99']:.2f}",
+        f"value:max_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_max']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
         if partition_key_range_requests_per_sec:
             for range_id, requests_per_sec in sorted(partition_key_range_requests_per_sec.items(), key=lambda item: item[0]):
-                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}, ru_per_sec={partition_key_range_ru_per_sec.get(range_id, 0.0):.2f}")
+                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}")
         else:
             lines.append("value:observed_ranges=0")
         lines.append(f"value:missing_header_count={partition_key_range_missing_header_count}")
@@ -663,16 +624,6 @@ def _aggregate_throughput_samples(results: dict[int, dict]) -> list[float]:
     return aggregate_samples
 
 
-def _aggregate_insert_request_samples(results: dict[int, dict]) -> list[float]:
-    sample_lists = [result.get("insert_requests_per_sec_samples", []) for result in results.values()]
-    aggregate_samples = []
-    for sample_group in zip_longest(*sample_lists, fillvalue=None):
-        values = [value for value in sample_group if value is not None]
-        if values:
-            aggregate_samples.append(sum(values))
-    return aggregate_samples
-
-
 def _print_parent_result(
     results: dict[int, dict],
     extra: dict | None = None,
@@ -691,9 +642,7 @@ def _print_parent_result(
     other_overhead_sec = total_elapsed_time_sec - insert_time_sec - data_load_time_sec
     completed_clients = len(results)
     fallback_throughput = _safe_div(success_total, insert_time_sec)
-    fallback_insert_requests_per_sec = _safe_div(create_item_attempts, insert_time_sec)
     throughput_samples = _samples_or_fallback(_aggregate_throughput_samples(results), fallback_throughput)
-    insert_request_samples = _samples_or_fallback(_aggregate_insert_request_samples(results), fallback_insert_requests_per_sec)
     service_times = [value for result in results.values() for value in result.get("service_time_ms_samples", [])]
     request_charge_total = sum(result.get("request_charge_total", 0.0) for result in results.values())
     request_charge_observations = sum(result.get("request_charge_observations", 0) for result in results.values())
@@ -724,20 +673,14 @@ def _print_parent_result(
         "throughput_sample_count": len(throughput_samples),
         "timing_sample_count": timing_sample_count,
     }
-    metrics.update(_throughput_summary(throughput_samples, "throughput_docs_per_sec"))
+    current_throughput = throughput_samples[-1] if throughput_samples else 0.0
     metrics.update(
-        _throughput_summary(
-            [sample / CLIENT_PROCESSES for sample in throughput_samples],
-            "throughput_docs_per_sec_per_client",
-        )
+        {
+            "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
+            "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(CLIENT_PROCESSES, 1)):.2f}",
+        }
     )
-    metrics.update(_throughput_summary(insert_request_samples, "insert_requests_per_sec"))
-    metrics.update(
-        _throughput_summary(
-            [sample / CLIENT_PROCESSES for sample in insert_request_samples],
-            "insert_requests_per_sec_per_client",
-        )
-    )
+    metrics.update(_throughput_percentile_summary(throughput_samples, "throughput_docs_per_sec"))
     metrics.update(_percentile_summary(service_times, "service_time_ms"))
     metrics.update(
         {

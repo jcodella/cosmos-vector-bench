@@ -256,8 +256,8 @@ Review the generated CSV in `results/` after each run. The most useful fields ar
 
 | Field | Use |
 |---|---|
-| `throughput_docs_per_sec_min`, `throughput_docs_per_sec_mean`, `throughput_docs_per_sec_median`, `throughput_docs_per_sec_max` | Rally-style sampled write throughput after warmup. |
-| `insert_requests_per_sec_min`, `insert_requests_per_sec_mean`, `insert_requests_per_sec_median`, `insert_requests_per_sec_max` | Sampled `create_item` request-attempt throughput. Retries count as additional insert requests. |
+| `throughput_docs_per_sec_current`, `throughput_docs_per_sec_per_client_current` | Latest successful insert throughput sample, total and divided by configured client count. |
+| `throughput_docs_per_sec_p50`, `throughput_docs_per_sec_p90`, `throughput_docs_per_sec_p99`, `throughput_docs_per_sec_max` | Percentile and peak successful insert throughput from sampled windows after warmup. |
 | `avg_ru_per_operation` | Actual RU charged per inserted document. |
 | `throttles_total` | Cosmos DB 429 throttles. Increase RU/s or reduce client pressure if this rises. |
 | `service_time_ms_p90`, `service_time_ms_p99` | Time from each individual Cosmos `create_item` request send until that request receives a response or error. |
