@@ -15,9 +15,10 @@ DATA_TYPE=file
 DOC_JSON_PATH=./data/open_ai_corpus-initial-indexing.json
 DOC_JSON_FORMAT=jsonl
 PARTITION_KEY_FIELD=docid
+REPLACE_PARTITION_KEY_WITH_GUID=false
 ```
 
-`DATA_URL` is the remote file to download. `DATA_DIR` is where the downloaded and optionally decompressed files are written. `DOC_JSON_PATH` can point to either the plain JSON/JSONL file or the `.bz2` compressed file that the benchmark should upload. Every loaded document must contain `PARTITION_KEY_FIELD`. If a source document is missing `id`, the writer copies `PARTITION_KEY_FIELD` into `id` before upload.
+`DATA_URL` is the remote file to download. `DATA_DIR` is where the downloaded and optionally decompressed files are written. `DOC_JSON_PATH` can point to either the plain JSON/JSONL file or the `.bz2` compressed file that the benchmark should upload. Every loaded document must contain `PARTITION_KEY_FIELD`. If `REPLACE_PARTITION_KEY_WITH_GUID=true`, the writer replaces that field with a generated GUID before upload. If a source document is missing `id`, the writer copies the final `PARTITION_KEY_FIELD` value into `id` before upload.
 
 ## Download Data
 

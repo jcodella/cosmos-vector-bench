@@ -203,7 +203,7 @@ Leave it blank for the full file:
 MAX_TOTAL_DOCS=
 ```
 
-Cosmos DB requires every item to have an `id`, and file-input records must contain the configured `PARTITION_KEY_FIELD`. If a source document does not already have an `id`, the writer copies the configured partition key value into `id` at upload time, so the source file does not need to be modified.
+Cosmos DB requires every item to have an `id`, and file-input records must contain the configured `PARTITION_KEY_FIELD`. If `REPLACE_PARTITION_KEY_WITH_GUID=true`, the writer replaces that partition key field with a generated GUID for each loaded file document before upload. If a source document does not already have an `id`, the writer copies the final partition key value into `id`, so the source file does not need to be modified.
 
 ## CLI Overrides
 
@@ -248,6 +248,7 @@ The benchmark loads `.env` and `main.py` can override common values from CLI arg
 | `BULK_SIZE` | int | `30` | Number of documents each worker pulls into a local bulk before scheduling uploads. |
 | `MAX_TOTAL_DOCS` | optional int | `100000` or blank | Optional cap on how many documents to upload. Blank means no cap for JSON mode. |
 | `PARTITION_KEY_FIELD` | string | `docid` | Required field for every file-input document and target Cosmos container partition key path, without the leading slash. Used in diagnostics, must match the existing container policy, and is copied to Cosmos `id` when a source document is missing `id`. |
+| `REPLACE_PARTITION_KEY_WITH_GUID` | bool | `false` | When `true`, replaces the configured partition key field with a generated GUID for each loaded JSON/JSONL/.bz2 file document before upload. |
 | `COSMOS_ERROR_SAMPLE_LIMIT` | int | `3` | Number of detailed Cosmos write failures to print per worker. |
 | `MAX_CONCURRENCY` / `MAX_IN_FLIGHT` | int | `30` | Max concurrent `create_item` calls per worker process. Total possible in-flight writes are roughly `NUM_CLIENTS * MAX_CONCURRENCY`. |
 | `MAX_INSERT_RETRIES` | int | `3` | Number of quick retries for throttled or transient Cosmos write failures. Non-transient failures such as duplicate item conflicts fail fast. |
@@ -306,8 +307,8 @@ During runs, watch these final CSV fields. Terminal live output uses the same co
 - `throttles_total`: if this rises, the workload is exceeding available RU or hitting partition limits.
 - `throughput_docs_per_sec_current`: successful insert throughput from the latest sample window.
 - `throughput_docs_per_sec_per_client_current`: latest successful insert throughput divided by configured client count.
-- `throughput_docs_per_sec_p50` / `throughput_docs_per_sec_p90` / `throughput_docs_per_sec_p99` / `throughput_docs_per_sec_max`: percentile and peak successful insert throughput from sampled windows after warmup.
-- `Partition key range stats`: live terminal-only diagnostics enabled by `PARTITION_KEY_RANGE_RPS_ENABLED=true`. For each observed range, prints one line like `pkrange_0=ops/sec=500.00`.
+- `throughput_docs_per_sec_mean` / `throughput_docs_per_sec_per_client_mean` / `throughput_docs_per_sec_max`: mean and peak successful insert throughput from sampled windows after warmup.
+- `Partition key range stats`: live terminal-only diagnostics enabled by `PARTITION_KEY_RANGE_RPS_ENABLED=true`. Observed ranges are printed on one line, such as `pkrange_0=ops/sec=500.00 , pkrange_1=ops/sec=450.00`.
 - `service_time_ms_p90` / `service_time_ms_p99`: time from each individual `create_item` request send until that request receives a response or error.
 - `capture_ru_charges`: whether RU capture was enabled for the run. When `false`, RU metrics are intentionally zero.
 - `metrics_timing_sample_interval`: how often bulk timing samples were retained for percentile metrics.

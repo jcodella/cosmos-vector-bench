@@ -11,13 +11,10 @@ from config import (
     BULK_SIZE,
     CAPTURE_RU_CHARGES,
     CLIENT_PROCESSES,
-    MAX_IN_FLIGHT,
-    MAX_PENDING_BULKS,
     METRICS_SAMPLE_INTERVAL_SEC,
     METRICS_TIMING_SAMPLE_INTERVAL,
     METRICS_WARMUP_SEC,
     PARTITION_KEY_RANGE_RPS_ENABLED,
-    PAYLOAD_BYTES,
     _write_metrics_csv,
 )
 
@@ -67,9 +64,8 @@ FINAL_METRIC_SECTIONS = {
     "Throughput": (
         "throughput_docs_per_sec_current",
         "throughput_docs_per_sec_per_client_current",
-        "throughput_docs_per_sec_p50",
-        "throughput_docs_per_sec_p90",
-        "throughput_docs_per_sec_p99",
+        "throughput_docs_per_sec_mean",
+        "throughput_docs_per_sec_per_client_mean",
         "throughput_docs_per_sec_max",
     ),
     "Timing": (
@@ -168,18 +164,19 @@ def _percentile(sorted_values: list[float], ratio: float) -> float:
     return sorted_values[index]
 
 
-def _throughput_percentile_summary(values: list[float], prefix: str) -> dict:
-    sorted_values = sorted(values)
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _throughput_summary(values: list[float], prefix: str) -> dict:
     return {
-        f"{prefix}_p50": f"{_percentile(sorted_values, 0.50):.2f}",
-        f"{prefix}_p90": f"{_percentile(sorted_values, 0.90):.2f}",
-        f"{prefix}_p99": f"{_percentile(sorted_values, 0.99):.2f}",
-        f"{prefix}_max": f"{(max(sorted_values) if sorted_values else 0.0):.2f}",
+        f"{prefix}_mean": f"{_mean(values):.2f}",
+        f"{prefix}_max": f"{(max(values) if values else 0.0):.2f}",
     }
 
 
-def _float_throughput_percentile_summary(values: list[float], prefix: str) -> dict:
-    return {name: float(value) for name, value in _throughput_percentile_summary(values, prefix).items()}
+def _float_throughput_summary(values: list[float], prefix: str) -> dict:
+    return {name: float(value) for name, value in _throughput_summary(values, prefix).items()}
 
 
 def _percentile_summary(values: list[float], prefix: str) -> dict:
@@ -332,7 +329,7 @@ def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
     throughput_samples = _samples_or_fallback(metrics["throughput_docs_per_sec_samples"], current_throughput)
     avg_ru_per_operation = _safe_div(metrics["request_charge_total"], metrics["request_charge_observations"])
     service_times = sorted(metrics["service_time_ms_samples"])
-    throughput_summary = _float_throughput_percentile_summary(throughput_samples, "throughput_docs_per_sec")
+    throughput_summary = _float_throughput_summary(throughput_samples, "throughput_docs_per_sec")
 
     return {
         "client_process_index": worker_index,
@@ -349,6 +346,7 @@ def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "create_item_failure_attempts": metrics["create_item_failure_attempts"],
         "throughput_docs_per_sec_current": current_throughput,
         "throughput_docs_per_sec_per_client_current": _safe_div(current_throughput, max(client_count, 1)),
+        "throughput_docs_per_sec_per_client_mean": _safe_div(throughput_summary["throughput_docs_per_sec_mean"], max(client_count, 1)),
         **throughput_summary,
         "partition_key_range_requests_per_sec": dict(metrics["partition_key_range_requests_per_sec"]),
         "partition_key_range_missing_header_count": metrics["partition_key_range_missing_header_count"],
@@ -374,16 +372,18 @@ def _live_line(metrics: dict, total_docs: int | None, client_count: int, worker_
         "section:Throughput",
         f"value:current_docs_per_sec={snapshot['throughput_docs_per_sec_current']:.2f}",
         f"value:current_docs_per_sec_per_client={snapshot['throughput_docs_per_sec_per_client_current']:.2f}",
-        f"value:p50_docs_per_sec={snapshot['throughput_docs_per_sec_p50']:.2f}",
-        f"value:p90_docs_per_sec={snapshot['throughput_docs_per_sec_p90']:.2f}",
-        f"value:p99_docs_per_sec={snapshot['throughput_docs_per_sec_p99']:.2f}",
+        f"value:mean_docs_per_sec={snapshot['throughput_docs_per_sec_mean']:.2f}",
+        f"value:mean_docs_per_sec_per_client={snapshot['throughput_docs_per_sec_per_client_mean']:.2f}",
         f"value:max_docs_per_sec={snapshot['throughput_docs_per_sec_max']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
         if snapshot["partition_key_range_requests_per_sec"]:
-            for range_id, requests_per_sec in sorted(snapshot["partition_key_range_requests_per_sec"].items(), key=lambda item: item[0]):
-                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}")
+            range_parts = [
+                f"pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}"
+                for range_id, requests_per_sec in sorted(snapshot["partition_key_range_requests_per_sec"].items(), key=lambda item: item[0])
+            ]
+            lines.append(f"value:{' , '.join(range_parts)}")
         else:
             lines.append("value:observed_ranges=0")
         lines.append(f"value:missing_header_count={snapshot['partition_key_range_missing_header_count']}")
@@ -439,9 +439,6 @@ def _result_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "bulk_docs_attempted": metrics["bulk_docs_attempted"],
         "bulk_docs_sampled": metrics["bulk_docs_sampled"],
         "bulk_timing_observations": metrics["bulk_timing_observations"],
-        "max_pending_bulks": MAX_PENDING_BULKS,
-        "max_in_flight": MAX_IN_FLIGHT,
-        "payload_bytes": PAYLOAD_BYTES,
         "request_charge_total": metrics["request_charge_total"],
         "request_charge_observations": metrics["request_charge_observations"],
         "avg_ru_per_operation": avg_ru_per_operation,
@@ -467,13 +464,17 @@ def _common_final_metrics(result: dict) -> dict:
         "timing_sample_count": result["timing_sample_count"],
     }
     current_throughput = result["throughput_docs_per_sec_samples"][-1] if result["throughput_docs_per_sec_samples"] else 0.0
+    throughput_summary = _throughput_summary(result["throughput_docs_per_sec_samples"], "throughput_docs_per_sec")
+    throughput_mean = float(throughput_summary["throughput_docs_per_sec_mean"])
     metrics.update(
         {
             "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
             "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(result['client_process_count'], 1)):.2f}",
+            "throughput_docs_per_sec_mean": throughput_summary["throughput_docs_per_sec_mean"],
+            "throughput_docs_per_sec_per_client_mean": f"{_safe_div(throughput_mean, max(result['client_process_count'], 1)):.2f}",
+            "throughput_docs_per_sec_max": throughput_summary["throughput_docs_per_sec_max"],
         }
     )
-    metrics.update(_throughput_percentile_summary(result["throughput_docs_per_sec_samples"], "throughput_docs_per_sec"))
     metrics.update(_percentile_summary(result["service_time_ms_samples"], "service_time_ms"))
     return metrics
 
@@ -489,9 +490,6 @@ def _print_result(result: dict) -> None:
             "bulk_errors": result["bulk_errors"],
             "bulk_docs_attempted": result["bulk_docs_attempted"],
             "bulk_docs_sampled": result["bulk_docs_sampled"],
-            "max_pending_bulks": result["max_pending_bulks"],
-            "max_in_flight": result["max_in_flight"],
-            "payload_bytes": result["payload_bytes"],
             "request_charge_total": f"{result['request_charge_total']:.2f}",
             "request_charge_observations": result["request_charge_observations"],
             "avg_ru_per_operation": f"{result['avg_ru_per_operation']:.2f}",
@@ -564,7 +562,7 @@ def _aggregate_line(
     throughput_current = sum(metric.get("throughput_docs_per_sec_current", 0.0) for metric in latest_metrics.values())
     if aggregate_throughput_samples is not None and any(metric.get("started") for metric in latest_metrics.values()):
         aggregate_throughput_samples.append(throughput_current)
-    throughput_summary = _float_throughput_percentile_summary(aggregate_throughput_samples or [], "throughput_docs_per_sec")
+    throughput_summary = _float_throughput_summary(aggregate_throughput_samples or [], "throughput_docs_per_sec")
     partition_key_range_requests_per_sec = {}
     partition_key_range_missing_header_count = 0
     if PARTITION_KEY_RANGE_RPS_ENABLED:
@@ -587,16 +585,18 @@ def _aggregate_line(
         "section:Throughput",
         f"value:current_docs_per_sec_total={throughput_current:.2f}",
         f"value:current_docs_per_sec_per_client={_safe_div(throughput_current, max(client_processes, 1)):.2f}",
-        f"value:p50_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p50']:.2f}",
-        f"value:p90_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p90']:.2f}",
-        f"value:p99_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_p99']:.2f}",
+        f"value:mean_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_mean']:.2f}",
+        f"value:mean_docs_per_sec_per_client={_safe_div(throughput_summary['throughput_docs_per_sec_mean'], max(client_processes, 1)):.2f}",
         f"value:max_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_max']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
         if partition_key_range_requests_per_sec:
-            for range_id, requests_per_sec in sorted(partition_key_range_requests_per_sec.items(), key=lambda item: item[0]):
-                lines.append(f"value:pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}")
+            range_parts = [
+                f"pkrange_{range_id}=ops_per_sec={requests_per_sec:.2f}"
+                for range_id, requests_per_sec in sorted(partition_key_range_requests_per_sec.items(), key=lambda item: item[0])
+            ]
+            lines.append(f"value:{' , '.join(range_parts)}")
         else:
             lines.append("value:observed_ranges=0")
         lines.append(f"value:missing_header_count={partition_key_range_missing_header_count}")
@@ -674,13 +674,17 @@ def _print_parent_result(
         "timing_sample_count": timing_sample_count,
     }
     current_throughput = throughput_samples[-1] if throughput_samples else 0.0
+    throughput_summary = _throughput_summary(throughput_samples, "throughput_docs_per_sec")
+    throughput_mean = float(throughput_summary["throughput_docs_per_sec_mean"])
     metrics.update(
         {
             "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
             "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(CLIENT_PROCESSES, 1)):.2f}",
+            "throughput_docs_per_sec_mean": throughput_summary["throughput_docs_per_sec_mean"],
+            "throughput_docs_per_sec_per_client_mean": f"{_safe_div(throughput_mean, max(CLIENT_PROCESSES, 1)):.2f}",
+            "throughput_docs_per_sec_max": throughput_summary["throughput_docs_per_sec_max"],
         }
     )
-    metrics.update(_throughput_percentile_summary(throughput_samples, "throughput_docs_per_sec"))
     metrics.update(_percentile_summary(service_times, "service_time_ms"))
     metrics.update(
         {
@@ -691,10 +695,6 @@ def _print_parent_result(
             "bulk_errors": bulk_errors,
             "bulk_docs_attempted": bulk_docs_attempted,
             "bulk_docs_sampled": bulk_docs_sampled,
-            "max_pending_bulks_per_client": MAX_PENDING_BULKS,
-            "max_in_flight_per_client": MAX_IN_FLIGHT,
-            "max_in_flight_total": MAX_IN_FLIGHT * CLIENT_PROCESSES,
-            "payload_bytes": PAYLOAD_BYTES,
             "request_charge_total": f"{request_charge_total:.2f}",
             "request_charge_observations": request_charge_observations,
             "avg_ru_per_operation": f"{_safe_div(request_charge_total, request_charge_observations):.2f}",

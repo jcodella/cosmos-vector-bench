@@ -11,7 +11,7 @@ import traceback
 from os import urandom
 from pathlib import Path
 
-from config import DOC_JSON_FORMAT, PARTITION_KEY_FIELD, READ_BATCH_SIZE
+from config import DOC_JSON_FORMAT, PARTITION_KEY_FIELD, READ_BATCH_SIZE, REPLACE_PARTITION_KEY_WITH_GUID
 
 try:
     import ijson
@@ -60,14 +60,18 @@ def _prepare_loaded_doc(
             f"Available fields: {', '.join(sorted(str(key) for key in doc.keys())[:20])}"
         )
 
-    if "id" in doc and doc["id"]:
-        if isinstance(doc["id"], str):
-            return doc
-        prepared = dict(doc)
+    prepared = dict(doc) if REPLACE_PARTITION_KEY_WITH_GUID else doc
+    if REPLACE_PARTITION_KEY_WITH_GUID:
+        prepared[PARTITION_KEY_FIELD] = _new_guid_id()
+
+    if "id" in prepared and prepared["id"]:
+        if isinstance(prepared["id"], str):
+            return prepared
+        prepared = dict(prepared)
         prepared["id"] = str(prepared["id"])
         return prepared
 
-    prepared = dict(doc)
+    prepared = dict(prepared)
     prepared["id"] = str(prepared[PARTITION_KEY_FIELD])
     return prepared
 

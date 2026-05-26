@@ -885,16 +885,7 @@ async def run_json_parent() -> None:
     _print_parent_result(
         results,
         {
-            "data_type": DATA_TYPE,
-            "doc_json_path": DOC_JSON_PATH,
-            "doc_json_format": DOC_JSON_FORMAT,
-            "partition_key_field": PARTITION_KEY_FIELD,
-            "read_batch_size": READ_BATCH_SIZE,
-            "doc_queue_maxsize": queue_maxsize,
-            "doc_queue_max_docs": queue_maxsize * READ_BATCH_SIZE,
-            "doc_queue_multiplier": DOC_QUEUE_MULTIPLIER,
             "max_total_docs": MAX_TOTAL_DOCS or "",
-            "producer_docs_per_sec": f"{producer_status.get('docs_per_sec', 0.0):.2f}",
         },
         total_elapsed_time_sec=total_elapsed_time_sec,
         data_load_time_sec=data_load_time_sec,
