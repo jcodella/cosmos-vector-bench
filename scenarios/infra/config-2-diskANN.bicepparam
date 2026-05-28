@@ -2,12 +2,12 @@ using '../../infra/main.bicep'
 
 param accountName = '<existing-account-name>'
 param databaseName = 'testdb'
-param containerName = 'benchmark-openai-c2-diskann'
+param containerName = 's2-diskANN'
 param partitionKeyPath = '/docid'
-param autoscaleMaxThroughput = 47000
+param autoscaleMaxThroughput = 200000
 param vectorPath = '/emb'
 param vectorIndexType = 'diskANN'
 param vectorDimensions = 1536
 param vectorDataType = 'float32'
 param vectorDistanceFunction = 'cosine'
-param defaultTtlSeconds = 86400
+param defaultTtlSeconds = -1

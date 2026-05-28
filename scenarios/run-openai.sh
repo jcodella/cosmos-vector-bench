@@ -1,27 +1,68 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-index_type="${1:-quantizedFlat}"
+usage() {
+  echo "Usage: $0 [--index-type quantizedFlat|diskANN] [--resource-group name] [--account-name name]" >&2
+}
+
+index_type="quantizedFlat"
+resource_group="${resourceGroup:-}"
+account_name="${accountName:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --index-type|-i)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      index_type="$2"
+      shift 2
+      ;;
+    --resource-group|-g)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      resource_group="$2"
+      shift 2
+      ;;
+    --account-name|-a)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      account_name="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
 index_type_lower="$(printf '%s' "$index_type" | tr '[:upper:]' '[:lower:]')"
 
 case "$index_type_lower" in
   quantizedflat)
     normalized_index_type="quantizedFlat"
-    container_index_suffix="quantizedflat"
     ;;
   diskann)
     normalized_index_type="diskANN"
-    container_index_suffix="diskann"
     ;;
   *)
-    echo "Usage: $0 [quantizedFlat|diskANN]" >&2
+    usage
     exit 2
     ;;
 esac
 
-resource_group="${AZURE_RESOURCE_GROUP:-}"
 if [[ -z "$resource_group" ]]; then
-  echo "Set AZURE_RESOURCE_GROUP before running this script." >&2
+  echo "Set resourceGroup or pass --resource-group before running this script." >&2
   exit 2
 fi
 
@@ -48,18 +89,22 @@ scenarios=(
 for scenario in "${scenarios[@]}"; do
   read -r config bulk_size num_clients total_docs <<< "$scenario"
   param_file="./scenarios/infra/config-${config}-${normalized_index_type}.bicepparam"
-  container_name="benchmark-openai-c${config}-${container_index_suffix}"
+  container_name="s${config}-${normalized_index_type}"
 
   echo
   echo "=== OpenAI config ${config} (${normalized_index_type}) ==="
   echo "Provisioning ${container_name}"
-  az deployment group create --resource-group "$resource_group" --parameters "$param_file"
+  deployment_parameters=("$param_file")
+  if [[ -n "$account_name" ]]; then
+    deployment_parameters+=("accountName=$account_name")
+  fi
+  az deployment group create --resource-group "$resource_group" --parameters "${deployment_parameters[@]}"
 
-  export COSMOS_CONTAINER_NAME="$container_name"
-  echo "Running benchmark against ${COSMOS_CONTAINER_NAME}"
+  echo "Running benchmark against ${container_name}"
   "$python_bin" ./main.py \
     --bulk-size "$bulk_size" \
     --num-clients "$num_clients" \
     --total-docs "$total_docs" \
-    --data-path ./data/open_ai_corpus-initial-indexing.json.bz2
+    --data-path ./data/open_ai_corpus-initial-indexing.json.bz2 \
+    --container-name "$container_name"
 done
