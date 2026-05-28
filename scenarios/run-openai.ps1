@@ -1,21 +1,35 @@
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)]
     [ValidateSet('quantizedFlat', 'quantizedflat', 'diskANN', 'diskann')]
     [string]$IndexType = 'quantizedFlat',
 
-    [string]$ResourceGroup = $env:AZURE_RESOURCE_GROUP
+    [string]$ResourceGroup = $env:resourceGroup,
+
+    [string]$AccountName = $env:accountName
 )
 
 $ErrorActionPreference = 'Stop'
 
 if (-not $ResourceGroup) {
-    throw 'Set AZURE_RESOURCE_GROUP or pass -ResourceGroup <resource-group-name>.'
+    $callerResourceGroup = Get-Variable -Name resourceGroup -Scope 1 -ValueOnly -ErrorAction SilentlyContinue
+    if ($callerResourceGroup) {
+        $ResourceGroup = $callerResourceGroup
+    }
+}
+
+if (-not $ResourceGroup) {
+    throw 'Set $env:resourceGroup, set $resourceGroup, or pass -ResourceGroup <resource-group-name>.'
+}
+
+if (-not $AccountName) {
+    $callerAccountName = Get-Variable -Name accountName -Scope 1 -ValueOnly -ErrorAction SilentlyContinue
+    if ($callerAccountName) {
+        $AccountName = $callerAccountName
+    }
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $normalizedIndexType = if ($IndexType -ieq 'diskANN') { 'diskANN' } else { 'quantizedFlat' }
-$containerIndexSuffix = if ($normalizedIndexType -eq 'diskANN') { 'diskann' } else { 'quantizedflat' }
 $pythonExe = Join-Path $repoRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $pythonExe)) {
     $pythonExe = 'python'
@@ -34,23 +48,27 @@ try {
     foreach ($scenario in $scenarios) {
         $config = $scenario.Config
         $paramFile = ".\scenarios\infra\config-$config-$normalizedIndexType.bicepparam"
-        $containerName = "benchmark-openai-c$config-$containerIndexSuffix"
+        $containerName = "s$config-$normalizedIndexType"
 
         Write-Host ""
         Write-Host "=== OpenAI config $config ($normalizedIndexType) ==="
         Write-Host "Provisioning $containerName"
-        az deployment group create --resource-group $ResourceGroup --parameters $paramFile
+        $deploymentParameters = @($paramFile)
+        if ($AccountName) {
+            $deploymentParameters += "accountName=$AccountName"
+        }
+        az deployment group create --resource-group $ResourceGroup --parameters $deploymentParameters
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
 
-        $env:COSMOS_CONTAINER_NAME = $containerName
-        Write-Host "Running benchmark against $env:COSMOS_CONTAINER_NAME"
+        Write-Host "Running benchmark against $containerName"
         & $pythonExe .\main.py `
             --bulk-size $scenario['BulkSize'] `
             --num-clients $scenario['NumClients'] `
             --total-docs $scenario['TotalDocs'] `
-            --data-path .\data\open_ai_corpus-initial-indexing.json.bz2
+            --data-path .\data\open_ai_corpus-initial-indexing.json.bz2 `
+            --container-name $containerName
 
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE

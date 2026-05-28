@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 
-from config import CLIENT_PROCESSES, DATA_TYPE, EFFECTIVE_TOTAL_DOCS
+from config import BULK_SIZE, CLIENT_PROCESSES, DATA_TYPE, EFFECTIVE_TOTAL_DOCS
 from core import run_json_parent, run_parent, run_worker
 
 
@@ -26,7 +26,11 @@ async def main() -> None:
     Keeping the dispatch here makes `main.py` a thin CLI wrapper while the benchmark module owns runtime behavior.
     """
     _print_start_spacing()
-    print(f"Warming up {CLIENT_PROCESSES} client connection(s)...", flush=True)
+    print(
+        f"Starting up benchmark run for num_clients={CLIENT_PROCESSES}, "
+        f"bulk_size={BULK_SIZE}, max_documents={EFFECTIVE_TOTAL_DOCS}",
+        flush=True,
+    )
     if DATA_TYPE == "file":
         await run_json_parent()
     elif CLIENT_PROCESSES > 1:

@@ -1,6 +1,6 @@
 # Data Folder
 
-This folder is the local cache for benchmark input data. The downloader writes the configured source file into this folder and can optionally decompress `.bz2` files next to the downloaded archive.
+This folder is the local cache for benchmark input data. The downloader writes the configured source file into this folder and can decompress `.bz2` files next to the downloaded archive. For benchmark runs, decompress the `.bz2` file first and point the writer at the plain JSON/JSONL file so the producer does not spend CPU decompressing during uploads. Using compressed input can limit app-side throughput because the loader has to decompress records while the upload workers are trying to stay busy.
 
 Generated and downloaded data files in this folder are ignored by Git. Keep this README tracked, but do not commit the large corpus files.
 
@@ -18,11 +18,11 @@ PARTITION_KEY_FIELD=docid
 REPLACE_PARTITION_KEY_WITH_GUID=false
 ```
 
-`DATA_URL` is the remote file to download. `DATA_DIR` is where the downloaded and optionally decompressed files are written. `DOC_JSON_PATH` can point to either the plain JSON/JSONL file or the `.bz2` compressed file that the benchmark should upload. Every loaded document must contain `PARTITION_KEY_FIELD`. If `REPLACE_PARTITION_KEY_WITH_GUID=true`, the writer replaces that field with a generated GUID before upload. If a source document is missing `id`, the writer copies the final `PARTITION_KEY_FIELD` value into `id` before upload.
+`DATA_URL` is the remote file to download. `DATA_DIR` is where the downloaded and decompressed files are written. `DOC_JSON_PATH` should point to the plain JSON/JSONL file for repeatable throughput runs. The benchmark can stream a `.bz2` path directly, but that adds decompression work during each run and can limit client-side write throughput. Every loaded document must contain `PARTITION_KEY_FIELD`. If `REPLACE_PARTITION_KEY_WITH_GUID=true`, the writer replaces that field with a generated GUID before upload. If a source document is missing `id`, the writer copies the final `PARTITION_KEY_FIELD` value into `id` before upload.
 
 ## Download Data
 
-Run the downloader before running the benchmark. It decompresses `.bz2` files by default.
+Run the downloader before running the benchmark. It decompresses `.bz2` files by default, which is the recommended setup for performance testing.
 
 Windows PowerShell:
 
@@ -36,7 +36,7 @@ macOS/Linux:
 ./.venv/bin/python ./src/download_data.py
 ```
 
-To download only and skip decompression:
+To download only and skip decompression, use `--no-decompress`. This *can be* useful when disk space matters more than benchmark throughput, but it is **not the recommended path for max-RPS runs** because compressed input can limit app-side throughput. **For optimal performance, decompress data first.**
 
 Windows PowerShell:
 
@@ -57,16 +57,16 @@ data/open_ai_corpus-initial-indexing.json.bz2
 data/open_ai_corpus-initial-indexing.json
 ```
 
-Run the benchmark with `DATA_TYPE=file` and `DOC_JSON_PATH` pointing at one of the local files:
+Run the benchmark with `DATA_TYPE=file` and `DOC_JSON_PATH` pointing at the decompressed local file:
 
 ```dotenv
 DOC_JSON_PATH=./data/open_ai_corpus-initial-indexing.json
 ```
 
-or:
+Direct `.bz2` input is still supported when needed:
 
 ```dotenv
 DOC_JSON_PATH=./data/open_ai_corpus-initial-indexing.json.bz2
 ```
 
-The benchmark reader infers compression from the `.bz2` file name. Reading the compressed file directly avoids keeping a decompressed copy, but it uses CPU to decompress during each benchmark run.
+The benchmark reader infers compression from the `.bz2` file name. Reading the compressed file directly avoids keeping a decompressed copy, but it uses CPU to decompress during each benchmark run and can limit app-side ingestion throughput. Prefer the decompressed `.json` file when comparing ingestion throughput.

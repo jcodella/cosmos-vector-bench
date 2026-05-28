@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -107,6 +108,23 @@ def _int_env_alias(primary: str, fallback: str, default: int, minimum: int = 1) 
     return _int_env(fallback, default, minimum)
 
 
+def _int_env_alias_or_auto(primary: str, fallback: str, default: int, auto_value: int) -> int:
+    """Read an integer alias pair, using an auto value when the configured value is below one.
+
+    This supports concurrency knobs where `0` or negative values mean "derive the value from bulk size" instead of failing validation.
+    The primary value still wins when both names are present, matching `_int_env_alias` behavior.
+    """
+    env_name = primary if os.getenv(primary, "").strip() else fallback
+    raw = os.getenv(env_name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw.replace("_", ""))
+    except ValueError as exc:
+        raise ValueError(f"{env_name} must be an integer, got {raw!r}") from exc
+    return auto_value if value < 1 else value
+
+
 def _run_started_at() -> datetime:
     """Return the stable timestamp for the current benchmark run.
 
@@ -135,6 +153,7 @@ load_dotenv(ENV_PATH, override=False)
 ENDPOINT = _require_env("COSMOS_ENDPOINT")
 DATABASE = _require_env("COSMOS_DATABASE_NAME")
 CONTAINER = _require_env("COSMOS_CONTAINER_NAME")
+COSMOS_KEY = os.getenv("COSMOS_KEY", "").strip()
 
 TOTAL_DOCS = _int_env("TOTAL_DOCS", 1_000_000)
 MAX_TOTAL_DOCS = _optional_int_env("MAX_TOTAL_DOCS")
@@ -144,9 +163,10 @@ CLIENT_PROCESSES = (
     else _int_env_alias("CLIENTS", "CLIENT_PROCESSES", 1)
 )
 BULK_SIZE = _int_env("BULK_SIZE", 100)
-MAX_IN_FLIGHT = _int_env_alias("MAX_IN_FLIGHT", "MAX_CONCURRENCY", max(BULK_SIZE * 2, 40))
+MAX_IN_FLIGHT_AUTO = math.ceil(BULK_SIZE * 1.5)
+MAX_IN_FLIGHT = _int_env_alias_or_auto("MAX_IN_FLIGHT", "MAX_CONCURRENCY", max(BULK_SIZE * 2, 40), MAX_IN_FLIGHT_AUTO)
 MAX_PENDING_BULKS = _int_env("MAX_PENDING_BULKS", max(1, min(8, ((MAX_IN_FLIGHT + BULK_SIZE - 1) // BULK_SIZE) * 2)))
-MAX_INSERT_RETRIES = _int_env("MAX_INSERT_RETRIES", 3, minimum=0)
+MAX_INSERT_RETRIES = _int_env("MAX_INSERT_RETRIES", 5, minimum=0)
 INSERT_RETRY_DELAY_MS = _int_env("INSERT_RETRY_DELAY_MS", 50, minimum=0)
 CAPTURE_RU_CHARGES = _bool_env("CAPTURE_RU_CHARGES", True)
 PARTITION_KEY_RANGE_RPS_ENABLED = _bool_env("PARTITION_KEY_RANGE_RPS_ENABLED", False)
@@ -167,6 +187,14 @@ EFFECTIVE_TOTAL_DOCS = min(TOTAL_DOCS, MAX_TOTAL_DOCS) if MAX_TOTAL_DOCS is not 
 CSV_OUTPUT_ENABLED = _bool_env("CSV_OUTPUT_ENABLED", True)
 TEST_RESULTS_ROOT = Path(os.getenv("TEST_RESULTS_ROOT", "results").strip() or "results")
 RUN_STARTED_AT = _run_started_at()
+CSV_EXCLUDED_FIELDS = {
+    "current_docs_per_sec",
+    "current_docs_per_sec_per_client",
+    "timing_sample_count",
+    "create_item_failure_attempts_total",
+    "create_item_attempts_total",
+    "throughput_sample_count",
+}
 
 if DATA_TYPE not in {"fake", "file"}:
     raise ValueError("DATA_TYPE must be one of: fake, file")
@@ -226,12 +254,13 @@ def _write_metrics_csv(metrics: dict) -> None:
     if csv_path is None:
         return
 
+    csv_metrics = {name: value for name, value in metrics.items() if name not in CSV_EXCLUDED_FIELDS}
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(metrics.keys())
+    fieldnames = list(csv_metrics.keys())
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
     with csv_path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
-        writer.writerow(metrics)
+        writer.writerow(csv_metrics)
     print(f"metrics_csv_path={csv_path}")

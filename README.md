@@ -1,6 +1,6 @@
 # Cosmos DB Vector Write Throughput Test
 
-This repository contains a standalone Python throughput test for writing documents to Azure Cosmos DB. It can either generate synthetic documents or stream a JSON/JSONL corpus, including `.bz2`-compressed input. Use `src/download_data.py` to download and optionally decompress the source data into `data/` before running the writer.
+This repository contains a standalone Python throughput test for writing documents to Azure Cosmos DB. It can either generate synthetic documents or stream a JSON/JSONL corpus, including `.bz2`-compressed input. Use `src/download_data.py` to download and decompress the source data into `data/` before running throughput tests; compressed input can limit app-side throughput because the loader must decompress records during the run.
 
 ## File Layout
 
@@ -12,6 +12,10 @@ This repository contains a standalone Python throughput test for writing documen
 - `src/config.py` loads repo-root `.env` and benchmark configuration.
 - `src/download_data.py` downloads source datasets into `data/` and can optionally decompress `.bz2` files.
 - `counts.py` streams a JSON/JSONL corpus and compares total records with unique `docid` values.
+
+## Scenarios
+
+- [OpenAI vector corpus scenarios](scenarios/README.md) describes how to setup using data from ESRally's OpenAI vector corpus setup, scenario infrastructure files, and helper scripts.
 
 ## Get Started Right Away
 
@@ -35,9 +39,72 @@ python -m pip install -r requirements.txt
 az login
 ```
 
+### Cosmos DB Permissions
+
+Cosmos DB uses separate permission planes for these workflows:
+
+| Workflow | Required role | Permission plane |
+|---|---|---|
+| Container creation through Bicep, scripts, or Azure Resource Manager | `Cosmos DB Operator` | Azure control plane RBAC |
+| Data insertion with `DefaultAzureCredential` / Entra ID | `Cosmos DB Built-in Data Contributor` | Cosmos DB native data plane RBAC |
+
+If you set `COSMOS_KEY`, the benchmark uses key-based data-plane access for inserts. If `COSMOS_KEY` is blank, assign the data-plane role below to the signed-in user, group, managed identity, or service principal running the benchmark.
+
+Bash:
+
+```bash
+RESOURCE_GROUP="myResourceGroup"
+ACCOUNT_NAME="mycosmosaccount"
+SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+PRINCIPAL_ID="$(az ad signed-in-user show --query id -o tsv)"
+
+ACCOUNT_SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.DocumentDB/databaseAccounts/$ACCOUNT_NAME"
+
+az role assignment create \
+   --assignee "$PRINCIPAL_ID" \
+   --role "Cosmos DB Operator" \
+   --scope "$ACCOUNT_SCOPE"
+
+DATA_ROLE_ID="00000000-0000-0000-0000-000000000002"
+
+az cosmosdb sql role assignment create \
+   --account-name "$ACCOUNT_NAME" \
+   --resource-group "$RESOURCE_GROUP" \
+   --role-definition-id "$DATA_ROLE_ID" \
+   --principal-id "$PRINCIPAL_ID" \
+   --scope "/dbs"
+```
+
+PowerShell using Azure CLI:
+
+```powershell
+$ResourceGroup = "myResourceGroup"
+$AccountName = "mycosmosaccount"
+$SubscriptionId = az account show --query id -o tsv
+$PrincipalId = az ad signed-in-user show --query id -o tsv
+
+$AccountScope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.DocumentDB/databaseAccounts/$AccountName"
+
+az role assignment create `
+   --assignee $PrincipalId `
+   --role "Cosmos DB Operator" `
+   --scope $AccountScope
+
+$DataRoleId = "00000000-0000-0000-0000-000000000002"
+
+az cosmosdb sql role assignment create `
+   --account-name $AccountName `
+   --resource-group $ResourceGroup `
+   --role-definition-id $DataRoleId `
+   --principal-id $PrincipalId `
+   --scope "/dbs"
+```
+
+The data-plane scope can be narrowed from `/dbs` to `/dbs/<database>` or `/dbs/<database>/colls/<container>`.
+
 1. Configure the Cosmos DB resource, database, and container.
 
-   Create or choose a Cosmos DB for NoSQL account, a database, and a container with the partition key and vector policy you want to test. The script expects the database and container to already exist, and it authenticates with `DefaultAzureCredential` (EntraID).
+   Create or choose a Cosmos DB for NoSQL account, a database, and a container with the partition key and vector policy you want to test. The script expects the database and container to already exist. It authenticates with `COSMOS_KEY` when that value is set, and falls back to `DefaultAzureCredential` (Entra ID) when it is blank.
 
    Use a new container, or make sure the target container is empty before each file-based benchmark run. The writer uses create operations, so items that already exist with the same `id` and partition key are not overwritten; they fail as duplicate-item errors.
 
@@ -47,6 +114,7 @@ az login
 
    ```dotenv
    COSMOS_ENDPOINT=https://<account>.documents.azure.com:443/
+   COSMOS_KEY=
    COSMOS_DATABASE_NAME=testdb
    COSMOS_CONTAINER_NAME=<container>
    DATA_TYPE=file
@@ -69,7 +137,7 @@ az login
    ./.venv/bin/python ./src/download_data.py
    ```
 
-   This downloads `DATA_URL` into `DATA_DIR` and, by default, decompresses `.bz2` files next to the downloaded archive. Use `--no-decompress` to skip that step. The benchmark reader can use either file.
+   This downloads `DATA_URL` into `DATA_DIR` and, by default, decompresses `.bz2` files next to the downloaded archive. Use the decompressed file for throughput runs. The benchmark reader can use either file, but compressed input can limit app-side throughput.
 
 4. Run the benchmark.
 
@@ -141,7 +209,7 @@ macOS/Linux:
 ./.venv/bin/python ./src/download_data.py
 ```
 
-By default, the downloader also writes the decompressed `.json` file. To download only the `.bz2` archive, run:
+By default, the downloader also writes the decompressed `.json` file, which is the recommended input for throughput runs. To download only the `.bz2` archive, run:
 
 Windows PowerShell:
 
@@ -155,7 +223,7 @@ macOS/Linux:
 ./.venv/bin/python ./src/download_data.py --no-decompress
 ```
 
-Then configure the writer to read either the decompressed JSON file or the downloaded `.bz2` file. The benchmark reader infers compression from the file name.
+Then configure the writer to read the decompressed JSON file. The benchmark reader can also stream the downloaded `.bz2` file, but compressed input can limit app-side throughput because decompression happens during the benchmark run.
 
 ```dotenv
 DATA_URL=https://path-to-data-file.json
@@ -172,10 +240,10 @@ DOC_QUEUE_MULTIPLIER=30
 To stream the compressed file directly, use:
 
 ```dotenv
-DOC_JSON_PATH=./data/data-file.json
+DOC_JSON_PATH=./data/data-file.json.bz2
 ```
 
-Reading `.bz2` directly avoids keeping the decompressed file, but it spends CPU decompressing during each benchmark run. For repeated throughput runs, the decompressed `.json` file is usually the steadier input path.
+Reading `.bz2` directly avoids keeping the decompressed file, but it spends CPU decompressing during each benchmark run and can limit app-side ingestion throughput. For repeated throughput runs, the decompressed `.json` file is usually the steadier input path.
 
 Run:
 
@@ -235,7 +303,8 @@ The benchmark loads `.env` and `main.py` can override common values from CLI arg
 
 | Parameter | Data type | Example | Description |
 |---|---|---:|---|
-| `COSMOS_ENDPOINT` | string | `https://...documents.azure.com:443/` | Cosmos DB account endpoint. Uses Azure AD via `DefaultAzureCredential`. |
+| `COSMOS_ENDPOINT` | string | `https://...documents.azure.com:443/` | Cosmos DB account endpoint. |
+| `COSMOS_KEY` | string | blank or account key | Optional Cosmos DB account key. When blank, authentication uses `DefaultAzureCredential` / Entra ID. |
 | `COSMOS_DATABASE_NAME` | string | `testdb` | Target database name. Must already exist. |
 | `COSMOS_CONTAINER_NAME` | string | `benchmark-100k` | Target container name. Must already exist and have the desired partition key/vector policy. |
 | `DATA_URL` | URL string | `https://source-url-here.com/example.json.bz2` | Source URL used by `src/download_data.py`. The file is downloaded into `DATA_DIR`. |
@@ -250,7 +319,7 @@ The benchmark loads `.env` and `main.py` can override common values from CLI arg
 | `PARTITION_KEY_FIELD` | string | `docid` | Required field for every file-input document and target Cosmos container partition key path, without the leading slash. Used in diagnostics, must match the existing container policy, and is copied to Cosmos `id` when a source document is missing `id`. |
 | `REPLACE_PARTITION_KEY_WITH_GUID` | bool | `false` | When `true`, replaces the configured partition key field with a generated GUID for each loaded JSON/JSONL/.bz2 file document before upload. |
 | `COSMOS_ERROR_SAMPLE_LIMIT` | int | `3` | Number of detailed Cosmos write failures to print per worker. |
-| `MAX_CONCURRENCY` / `MAX_IN_FLIGHT` | int | `30` | Max concurrent `create_item` calls per worker process. Total possible in-flight writes are roughly `NUM_CLIENTS * MAX_CONCURRENCY`. |
+| `MAX_CONCURRENCY` / `MAX_IN_FLIGHT` | int | `30` | Max concurrent `create_item` calls per worker process. Values below `1` are treated as auto and resolve to `ceil(1.5 * BULK_SIZE)`. Total possible in-flight writes are roughly `NUM_CLIENTS * MAX_CONCURRENCY`. |
 | `MAX_INSERT_RETRIES` | int | `3` | Number of quick retries for throttled or transient Cosmos write failures. Non-transient failures such as duplicate item conflicts fail fast. |
 | `INSERT_RETRY_DELAY_MS` | int | `50` | Base retry delay in milliseconds when Cosmos does not return retry-after guidance. Retry-after headers are honored when present. |
 | `CAPTURE_RU_CHARGES` | bool | `true` | Captures `x-ms-request-charge` through a per-request response hook. Set to `false` to reduce hot-path overhead; RU metrics will report zero. |
@@ -265,59 +334,19 @@ The benchmark loads `.env` and `main.py` can override common values from CLI arg
 | `CSV_OUTPUT_ENABLED` | bool | `true` | Writes final metrics to a CSV file when enabled. Set to `false` to disable CSV output. |
 | `TEST_RESULTS_ROOT` | path string | `results` | Optional root folder for metrics CSV output. Defaults to `results`. |
 
-## Provisioning Cosmos DB Throughput
 
-For vector write tests, size autoscale throughput from the desired sustained writes per second and the approximate RU cost per document. Then add headroom for larger metadata, document-size variance, uneven partition distribution, indexing overhead, retries, and other factors that can increase RU consumption.
 
-Approximate write RU assumptions:
-
-| Vector index type | Approx RU per inserted document | Notes |
-|---|---:|---|
-| Quantized flat vector index | ~35 RU/doc | Lower write cost; good first estimate for quantized flat. |
-| DiskANN vector index | ~65 RU/doc | Higher write/indexing cost; use a larger budget. |
-
-Formula:
-
-```text
-required_RU_per_second = target_docs_per_second * RU_per_doc
-recommended_autoscale_max_RU = required_RU_per_second * 1.2
-```
-
-The `1.2` multiplier is a 20% buffer. Use more buffer if documents are large, vectors are high-dimensional, partitions are uneven, etc.
-
-Examples:
-
-| Target writes/sec | Quantized flat base RU/s | Quantized flat +20% autoscale max | DiskANN base RU/s | DiskANN +20% autoscale max |
-|---:|---:|---:|---:|---:|
-| 500 | 17,500 | 21,000 | 32,500 | 39,000 |
-| 1,000 | 35,000 | 42,000 | 65,000 | 78,000 |
-| 2,000 | 70,000 | 84,000 | 130,000 | 156,000 |
-| 5,000 | 175,000 | 210,000 | 325,000 | 390,000 |
-
-Because Cosmos DB autoscale max throughput is provisioned as a maximum RU/s, set the autoscale max at or above the buffered value. For example, for 2,000 writes/sec with DiskANN:
-
-```text
-2,000 docs/sec * 65 RU/doc = 130,000 RU/s
-130,000 RU/s * 1.2 = 156,000 autoscale max RU/s
-```
-
-During runs, watch these final CSV fields. Terminal live output uses the same concepts but renders `_per_` as `/` for readability, such as `current_docs/sec_total` and `avg_ru/operation`.
+During runs, watch these final CSV fields. Terminal live output uses the same concepts but renders `_per_` as `/` for readability, such as `current_docs/sec` and `avg_ru/operation`.
 
 - `avg_ru_per_operation`: actual average RU charged per write.
-- `throttles_total`: if this rises, the workload is exceeding available RU or hitting partition limits.
-- `throughput_docs_per_sec_current`: successful insert throughput from the latest sample window.
-- `throughput_docs_per_sec_per_client_current`: latest successful insert throughput divided by configured client count.
-- `throughput_docs_per_sec_mean` / `throughput_docs_per_sec_per_client_mean` / `throughput_docs_per_sec_max`: mean and peak successful insert throughput from sampled windows after warmup.
+- `throttles_w_retry_total`: if this rises, the workload is exceeding available RU or hitting partition limits. This counts 429 retry attempts, including writes that later succeed.
+- `current_docs_per_sec` / `current_docs_per_sec_per_client`: successful insert throughput from the latest sample window, total and divided by configured client count.
+- `mean_docs_per_sec` / `mean_docs_per_sec_per_client` / `max_docs_per_sec`: mean and peak successful insert throughput from sampled windows after warmup.
 - `Partition key range stats`: live terminal-only diagnostics enabled by `PARTITION_KEY_RANGE_RPS_ENABLED=true`. Observed ranges are printed on one line, such as `pkrange_0=ops/sec=500.00 , pkrange_1=ops/sec=450.00`.
-- `service_time_ms_p90` / `service_time_ms_p99`: time from each individual `create_item` request send until that request receives a response or error.
+- `service_time_ms_mean` / `service_time_ms_p50` / `service_time_ms_p90` / `service_time_ms_p99`: time from each individual `create_item` request send until that request receives a response or error.
 - `capture_ru_charges`: whether RU capture was enabled for the run. When `false`, RU metrics are intentionally zero.
 - `metrics_timing_sample_interval`: how often bulk timing samples were retained for percentile metrics.
 
-If `avg_ru_per_operation` differs from the estimates, re-size from the measured value:
-
-```text
-recommended_autoscale_max_RU = target_docs_per_second * measured_avg_ru_per_operation * 1.2
-```
 
 ## Tuning Notes
 
@@ -325,5 +354,4 @@ recommended_autoscale_max_RU = target_docs_per_second * measured_avg_ru_per_oper
 - Increase `MAX_CONCURRENCY` to allow more simultaneous writes per process.
 - Keep `BULK_SIZE` large enough that workers do not schedule tiny waves of work.
 - Keep `DOC_QUEUE_MULTIPLIER` high enough that workers do not starve while the producer reads the JSON/JSONL file from disk. Increase it to reduce disk-loading bottlenecks, but remember that larger queues consume more RAM.
-- If throttles rise, reduce client pressure or increase autoscale max RU/s.
-- If errors show vector policy issues, verify the target container vector policy. For example, some Cosmos API paths reject `float16` as a vector `dataType`; use a supported policy such as `float32` where required.
+- If `throttles_w_retry_total` rises, reduce client pressure or increase autoscale max RU/s.

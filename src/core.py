@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 from collections.abc import AsyncIterable
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from azure.cosmos import exceptions
@@ -22,6 +23,7 @@ from config import (
     CLIENT_PROCESSES,
     CONTAINER,
     COSMOS_ERROR_SAMPLE_LIMIT,
+    COSMOS_KEY,
     DATABASE,
     DOC_JSON_FORMAT,
     DOC_JSON_PATH,
@@ -364,7 +366,12 @@ def _print_cosmos_error_sample(exc: exceptions.CosmosHttpResponseError, doc: dic
     print(f"doc_preview={_safe_json_preview(_doc_preview(doc), max_chars=4000)}", flush=True)
     print(f"exception={exc!r}", flush=True)
 
-async def insert_doc(container, sem: asyncio.Semaphore, doc: dict, metrics: dict) -> tuple[float, float, list[tuple[float, float]]]:
+async def insert_doc(
+    container,
+    sem: asyncio.Semaphore,
+    doc: dict,
+    metrics: dict,
+) -> tuple[float, float, list[tuple[float, float]]]:
     """Create one Cosmos item and return its request timing window.
 
     This is the hot path that issues `container.create_item` under the worker concurrency semaphore.
@@ -431,7 +438,7 @@ async def insert_doc(container, sem: asyncio.Semaphore, doc: dict, metrics: dict
                     _record_partition_key_range_request(metrics, attempt_partition_key_range_id)
 
                     if getattr(exc, "status_code", None) == 429:
-                        metrics["throttles"] += 1
+                        metrics["throttles_w_retry"] += 1
 
                     if attempt < MAX_INSERT_RETRIES and _is_retryable_cosmos_error(exc):
                         await asyncio.sleep(_retry_after_seconds(exc, attempt + 1))
@@ -456,7 +463,12 @@ def _unpack_doc_batch(doc_batch: object) -> list[dict]:
     return doc_batch
 
 
-async def insert_bulk(container, sem: asyncio.Semaphore, docs: list[dict], metrics: dict) -> None:
+async def insert_bulk(
+    container,
+    sem: asyncio.Semaphore,
+    docs: list[dict],
+    metrics: dict,
+) -> None:
     """Schedule one local bulk of item creates and record bulk service time.
 
     The benchmark treats `BULK_SIZE` as a local operation grouping, not as a Cosmos bulk API request.
@@ -489,7 +501,12 @@ async def insert_bulk(container, sem: asyncio.Semaphore, docs: list[dict], metri
     )
 
 
-async def insert_doc_batches(container, sem: asyncio.Semaphore, doc_batches: AsyncIterable[object], metrics: dict) -> None:
+async def insert_doc_batches(
+    container,
+    sem: asyncio.Semaphore,
+    doc_batches: AsyncIterable[object],
+    metrics: dict,
+) -> None:
     """Consume document batches while bounding pending bulk tasks.
 
     Workers use this scheduler for both generated and file-backed document sources.
@@ -589,6 +606,24 @@ def _worker_slices(total_docs: int, client_processes: int) -> list[tuple[int, in
     return slices
 
 
+@asynccontextmanager
+async def _cosmos_client_context():
+    """Open a Cosmos client using key auth when configured, otherwise Entra ID.
+
+    Workers call this once per process before resolving the target database and container.
+    A non-empty `COSMOS_KEY` value is passed directly to the Cosmos SDK as the account key.
+    When the key is blank, the benchmark keeps the existing `DefaultAzureCredential` path.
+    """
+    if COSMOS_KEY:
+        async with CosmosClient(ENDPOINT, credential=COSMOS_KEY) as client:
+            yield client
+        return
+
+    async with DefaultAzureCredential() as credential:
+        async with CosmosClient(ENDPOINT, credential=credential) as client:
+            yield client
+
+
 async def run_worker_with_batches(
     worker_index: int,
     total_docs: int | None,
@@ -598,7 +633,7 @@ async def run_worker_with_batches(
 ) -> dict:
     """Run a worker against an async stream of document batches.
 
-    This shared worker implementation opens the async credential, Cosmos client, database, and container used by one client process.
+    This shared worker implementation opens the Cosmos client, database, and container used by one client process.
     It starts live reporting, sends all provided batches through the insert scheduler, and returns the final result snapshot.
     Sharing this function keeps fake and file-input modes aligned in their write path and metrics behavior.
     """
@@ -607,28 +642,27 @@ async def run_worker_with_batches(
 
     sem = asyncio.Semaphore(MAX_IN_FLIGHT)
 
-    async with DefaultAzureCredential() as credential:
-        async with CosmosClient(ENDPOINT, credential=credential) as client:
-            db = client.get_database_client(DATABASE)
-            container = db.get_container_client(CONTAINER)
+    async with _cosmos_client_context() as client:
+        db = client.get_database_client(DATABASE)
+        container = db.get_container_client(CONTAINER)
 
-            done = asyncio.Event()
-            reporter = asyncio.create_task(
-                live_reporter(metrics, done, total_docs, client_count, worker_index, metric_queue)
-            )
+        done = asyncio.Event()
+        reporter = asyncio.create_task(
+            live_reporter(metrics, done, total_docs, client_count, worker_index, metric_queue)
+        )
 
-            try:
-                await insert_doc_batches(container, sem, doc_batches, metrics)
-            finally:
-                done.set()
-                await reporter
+        try:
+            await insert_doc_batches(container, sem, doc_batches, metrics)
+        finally:
+            done.set()
+            await reporter
 
-            result = _result_snapshot(metrics, total_docs, client_count, worker_index)
-            if metric_queue is not None:
-                _queue_message(metric_queue, "RESULT", worker_index, result)
-            else:
-                _print_result(result)
-            return result
+        result = _result_snapshot(metrics, total_docs, client_count, worker_index)
+        if metric_queue is not None:
+            _queue_message(metric_queue, "RESULT", worker_index, result)
+        else:
+            _print_result(result)
+        return result
 
 
 async def run_worker(
@@ -880,15 +914,12 @@ async def run_json_parent() -> None:
 
     return_codes = [process.exitcode if process.exitcode is not None else -1 for process in processes.values()]
     total_elapsed_time_sec = max(time.perf_counter() - total_started_at, 0.000001)
-    data_load_time_sec = producer_status.get("elapsed_sec", 0.0)
-
     _print_parent_result(
         results,
         {
             "max_total_docs": MAX_TOTAL_DOCS or "",
         },
         total_elapsed_time_sec=total_elapsed_time_sec,
-        data_load_time_sec=data_load_time_sec,
     )
 
     for worker_index, error in sorted(errors.items()):

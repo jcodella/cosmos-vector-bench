@@ -25,7 +25,6 @@ PERCENTILE_RATIOS = {
     "p50": 0.50,
     "p90": 0.90,
     "p99": 0.99,
-    "p999": 0.999,
 }
 
 
@@ -57,30 +56,28 @@ FINAL_METRIC_SECTIONS = {
     "Progress": (
         "total_elapsed_time_sec",
         "insert_time_sec",
-        "data_load_time_sec",
-        "other_overhead_sec",
         "docs_completed",
     ),
     "Throughput": (
-        "throughput_docs_per_sec_current",
-        "throughput_docs_per_sec_per_client_current",
-        "throughput_docs_per_sec_mean",
-        "throughput_docs_per_sec_per_client_mean",
-        "throughput_docs_per_sec_max",
+        "current_docs_per_sec",
+        "current_docs_per_sec_per_client",
+        "mean_docs_per_sec",
+        "mean_docs_per_sec_per_client",
+        "max_docs_per_sec",
     ),
     "Timing": (
+        "service_time_ms_mean",
         "service_time_ms_p50",
         "service_time_ms_p90",
         "service_time_ms_p99",
-        "service_time_ms_p999",
     ),
     "Responses": (
         "success",
         "success_total",
         "errors",
         "errors_total",
-        "throttles",
-        "throttles_total",
+        "throttles_w_retry",
+        "throttles_w_retry_total",
         "create_item_attempts",
         "create_item_attempts_total",
         "create_item_failure_attempts",
@@ -96,6 +93,28 @@ def _print_final_metric_row(name: str, value: object) -> None:
     print(f"{FINAL_METRIC_INDENT}{_display_metric_name(name)}={value}")
 
 
+def _print_final_metric_line(values: list[tuple[str, object]]) -> None:
+    text = ", ".join(f"{_display_metric_name(name)}={value}" for name, value in values)
+    print(f"{FINAL_METRIC_INDENT}{text}")
+
+
+def _print_final_throughput_lines(values: list[tuple[str, object]]) -> None:
+    lookup = dict(values)
+    paired_names = [
+        ("current_docs_per_sec", "current_docs_per_sec_per_client"),
+        ("mean_docs_per_sec", "mean_docs_per_sec_per_client"),
+    ]
+    printed = set()
+    for left, right in paired_names:
+        line_values = [(name, lookup[name]) for name in (left, right) if name in lookup]
+        if line_values:
+            _print_final_metric_line(line_values)
+            printed.update(name for name, _ in line_values)
+    for name, value in values:
+        if name not in printed:
+            _print_final_metric_row(name, value)
+
+
 def _emit_final_metrics(metrics: dict) -> None:
     _print_completion_banner()
     printed = set()
@@ -104,9 +123,16 @@ def _emit_final_metrics(metrics: dict) -> None:
         if not section_values:
             continue
         print(f"  {section_name}")
-        for name, value in section_values:
-            _print_final_metric_row(name, value)
-            printed.add(name)
+        if section_name == "Throughput":
+            _print_final_throughput_lines(section_values)
+            printed.update(name for name, _ in section_values)
+        elif section_name == "Timing":
+            _print_final_metric_line(section_values)
+            printed.update(name for name, _ in section_values)
+        else:
+            for name, value in section_values:
+                _print_final_metric_row(name, value)
+                printed.add(name)
 
     detail_values = [(name, value) for name, value in metrics.items() if name not in printed]
     if detail_values:
@@ -182,6 +208,13 @@ def _float_throughput_summary(values: list[float], prefix: str) -> dict:
 def _percentile_summary(values: list[float], prefix: str) -> dict:
     sorted_values = sorted(values)
     return {f"{prefix}_{name}": f"{_percentile(sorted_values, ratio):.2f}" for name, ratio in PERCENTILE_RATIOS.items()}
+
+
+def _timing_summary(values: list[float], prefix: str) -> dict:
+    return {
+        f"{prefix}_mean": f"{_mean(values):.2f}",
+        **_percentile_summary(values, prefix),
+    }
 
 
 def _completed_docs(metrics: dict) -> int:
@@ -341,17 +374,20 @@ def _metric_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "total_docs": total_docs,
         "success": metrics["success"],
         "errors": metrics["errors"],
-        "throttles": metrics["throttles"],
+        "throttles_w_retry": metrics["throttles_w_retry"],
         "create_item_attempts": metrics["create_item_attempts"],
         "create_item_failure_attempts": metrics["create_item_failure_attempts"],
-        "throughput_docs_per_sec_current": current_throughput,
-        "throughput_docs_per_sec_per_client_current": _safe_div(current_throughput, max(client_count, 1)),
-        "throughput_docs_per_sec_per_client_mean": _safe_div(throughput_summary["throughput_docs_per_sec_mean"], max(client_count, 1)),
-        **throughput_summary,
+        "current_docs_per_sec": current_throughput,
+        "current_docs_per_sec_per_client": _safe_div(current_throughput, max(client_count, 1)),
+        "mean_docs_per_sec": throughput_summary["throughput_docs_per_sec_mean"],
+        "mean_docs_per_sec_per_client": _safe_div(throughput_summary["throughput_docs_per_sec_mean"], max(client_count, 1)),
+        "max_docs_per_sec": throughput_summary["throughput_docs_per_sec_max"],
         "partition_key_range_requests_per_sec": dict(metrics["partition_key_range_requests_per_sec"]),
         "partition_key_range_missing_header_count": metrics["partition_key_range_missing_header_count"],
         "throughput_sample_count": len(metrics["throughput_docs_per_sec_samples"]),
+        "service_time_mean_ms": _mean(service_times),
         "service_time_p50_ms": _percentile(service_times, 0.50),
+        "service_time_p90_ms": _percentile(service_times, 0.90),
         "service_time_p99_ms": _percentile(service_times, 0.99),
         "bulks_started": metrics["bulks_started"],
         "bulks_completed": metrics["bulks_completed"],
@@ -370,11 +406,9 @@ def _live_line(metrics: dict, total_docs: int | None, client_count: int, worker_
         f"value:elapsed={snapshot['elapsed_sec']:.1f}s",
         f"value:completed={_format_completed(snapshot['completed'], total_docs)}",
         "section:Throughput",
-        f"value:current_docs_per_sec={snapshot['throughput_docs_per_sec_current']:.2f}",
-        f"value:current_docs_per_sec_per_client={snapshot['throughput_docs_per_sec_per_client_current']:.2f}",
-        f"value:mean_docs_per_sec={snapshot['throughput_docs_per_sec_mean']:.2f}",
-        f"value:mean_docs_per_sec_per_client={snapshot['throughput_docs_per_sec_per_client_mean']:.2f}",
-        f"value:max_docs_per_sec={snapshot['throughput_docs_per_sec_max']:.2f}",
+        f"value:current_docs_per_sec={snapshot['current_docs_per_sec']:.2f}, current_docs_per_sec_per_client={snapshot['current_docs_per_sec_per_client']:.2f}",
+        f"value:mean_docs_per_sec={snapshot['mean_docs_per_sec']:.2f}, mean_docs_per_sec_per_client={snapshot['mean_docs_per_sec_per_client']:.2f}",
+        f"value:max_docs_per_sec={snapshot['max_docs_per_sec']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
@@ -390,10 +424,9 @@ def _live_line(metrics: dict, total_docs: int | None, client_count: int, worker_
     lines.extend(
         [
             "section:Timing",
-            f"value:service_p50_ms={snapshot['service_time_p50_ms']:.2f}",
-            f"value:service_p99_ms={snapshot['service_time_p99_ms']:.2f}",
+            f"value:service_time_ms_mean={snapshot['service_time_mean_ms']:.2f}, service_time_ms_p50={snapshot['service_time_p50_ms']:.2f}, service_time_ms_p90={snapshot['service_time_p90_ms']:.2f}, service_time_ms_p99={snapshot['service_time_p99_ms']:.2f}",
             "section:Responses",
-            f"value:success={snapshot['success']}, errors={snapshot['errors']}, throttles={snapshot['throttles']}",
+            f"value:success={snapshot['success']}, errors={snapshot['errors']}, throttles_w_retry={snapshot['throttles_w_retry']}",
             f"value:avg_ru_per_operation={snapshot['avg_ru_per_operation']:.2f}",
         ]
     )
@@ -418,13 +451,11 @@ def _result_snapshot(metrics: dict, total_docs: int | None, client_count: int, w
         "finished_epoch": metrics["finished_epoch"],
         "total_elapsed_time_sec": total_elapsed_time_sec,
         "insert_time_sec": insert_time_sec,
-        "data_load_time_sec": 0.0,
-        "other_overhead_sec": total_elapsed_time_sec - insert_time_sec,
         "total_docs": total_docs,
         "docs_completed": completed,
         "success": metrics["success"],
         "errors": metrics["errors"],
-        "throttles": metrics["throttles"],
+        "throttles_w_retry": metrics["throttles_w_retry"],
         "create_item_attempts": metrics["create_item_attempts"],
         "create_item_failure_attempts": metrics["create_item_failure_attempts"],
         "throughput_docs_per_sec_samples": throughput_samples,
@@ -449,15 +480,13 @@ def _common_final_metrics(result: dict) -> dict:
     metrics = {
         "total_elapsed_time_sec": f"{result['total_elapsed_time_sec']:.2f}",
         "insert_time_sec": f"{result['insert_time_sec']:.2f}",
-        "data_load_time_sec": f"{result['data_load_time_sec']:.2f}",
-        "other_overhead_sec": f"{result['other_overhead_sec']:.2f}",
         "metrics_sample_interval_sec": f"{METRICS_SAMPLE_INTERVAL_SEC:.2f}",
         "metrics_timing_sample_interval": METRICS_TIMING_SAMPLE_INTERVAL,
         "capture_ru_charges": str(CAPTURE_RU_CHARGES).lower(),
         "docs_completed": result["docs_completed"],
         "success": result["success"],
         "errors": result["errors"],
-        "throttles": result["throttles"],
+        "throttles_w_retry": result["throttles_w_retry"],
         "create_item_attempts": result["create_item_attempts"],
         "create_item_failure_attempts": result["create_item_failure_attempts"],
         "throughput_sample_count": result["throughput_sample_count"],
@@ -468,14 +497,14 @@ def _common_final_metrics(result: dict) -> dict:
     throughput_mean = float(throughput_summary["throughput_docs_per_sec_mean"])
     metrics.update(
         {
-            "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
-            "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(result['client_process_count'], 1)):.2f}",
-            "throughput_docs_per_sec_mean": throughput_summary["throughput_docs_per_sec_mean"],
-            "throughput_docs_per_sec_per_client_mean": f"{_safe_div(throughput_mean, max(result['client_process_count'], 1)):.2f}",
-            "throughput_docs_per_sec_max": throughput_summary["throughput_docs_per_sec_max"],
+            "current_docs_per_sec": f"{current_throughput:.2f}",
+            "current_docs_per_sec_per_client": f"{_safe_div(current_throughput, max(result['client_process_count'], 1)):.2f}",
+            "mean_docs_per_sec": throughput_summary["throughput_docs_per_sec_mean"],
+            "mean_docs_per_sec_per_client": f"{_safe_div(throughput_mean, max(result['client_process_count'], 1)):.2f}",
+            "max_docs_per_sec": throughput_summary["throughput_docs_per_sec_max"],
         }
     )
-    metrics.update(_percentile_summary(result["service_time_ms_samples"], "service_time_ms"))
+    metrics.update(_timing_summary(result["service_time_ms_samples"], "service_time_ms"))
     return metrics
 
 
@@ -503,7 +532,7 @@ def _new_metrics() -> dict:
         "total_started_at": time.perf_counter(),
         "success": 0,
         "errors": 0,
-        "throttles": 0,
+        "throttles_w_retry": 0,
         "create_item_attempts": 0,
         "create_item_failure_attempts": 0,
         "started_at": None,
@@ -556,10 +585,10 @@ def _aggregate_line(
     active_clients = len(latest_metrics)
     success_total = sum(metric["success"] for metric in latest_metrics.values())
     errors_total = sum(metric["errors"] for metric in latest_metrics.values())
-    throttles_total = sum(metric["throttles"] for metric in latest_metrics.values())
+    throttles_w_retry_total = sum(metric["throttles_w_retry"] for metric in latest_metrics.values())
     completed_total = success_total + errors_total
     create_item_attempts = sum(metric.get("create_item_attempts", 0) for metric in latest_metrics.values())
-    throughput_current = sum(metric.get("throughput_docs_per_sec_current", 0.0) for metric in latest_metrics.values())
+    throughput_current = sum(metric.get("current_docs_per_sec", 0.0) for metric in latest_metrics.values())
     if aggregate_throughput_samples is not None and any(metric.get("started") for metric in latest_metrics.values()):
         aggregate_throughput_samples.append(throughput_current)
     throughput_summary = _float_throughput_summary(aggregate_throughput_samples or [], "throughput_docs_per_sec")
@@ -583,11 +612,9 @@ def _aggregate_line(
         f"value:clients_active={active_clients}/{client_processes}",
         f"value:completed={_format_completed(completed_total, total_docs)}",
         "section:Throughput",
-        f"value:current_docs_per_sec_total={throughput_current:.2f}",
-        f"value:current_docs_per_sec_per_client={_safe_div(throughput_current, max(client_processes, 1)):.2f}",
-        f"value:mean_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_mean']:.2f}",
-        f"value:mean_docs_per_sec_per_client={_safe_div(throughput_summary['throughput_docs_per_sec_mean'], max(client_processes, 1)):.2f}",
-        f"value:max_docs_per_sec_total={throughput_summary['throughput_docs_per_sec_max']:.2f}",
+        f"value:current_docs_per_sec={throughput_current:.2f}, current_docs_per_sec_per_client={_safe_div(throughput_current, max(client_processes, 1)):.2f}",
+        f"value:mean_docs_per_sec={throughput_summary['throughput_docs_per_sec_mean']:.2f}, mean_docs_per_sec_per_client={_safe_div(throughput_summary['throughput_docs_per_sec_mean'], max(client_processes, 1)):.2f}",
+        f"value:max_docs_per_sec={throughput_summary['throughput_docs_per_sec_max']:.2f}",
     ]
     if PARTITION_KEY_RANGE_RPS_ENABLED:
         lines.append("section:Partition key range stats")
@@ -603,10 +630,9 @@ def _aggregate_line(
     lines.extend(
         [
             "section:Timing",
-            f"value:service_p50_ms={service_p50:.2f}",
-            f"value:service_p99_ms={service_p99:.2f}",
+            f"value:service_time_ms_mean={_mean([metric.get('service_time_mean_ms', 0.0) for metric in latest_metrics.values()]):.2f}, service_time_ms_p50={service_p50:.2f}, service_time_ms_p90={max((metric.get('service_time_p90_ms', 0.0) for metric in latest_metrics.values()), default=0.0):.2f}, service_time_ms_p99={service_p99:.2f}",
             "section:Responses",
-            f"value:success={success_total}, errors={errors_total}, throttles={throttles_total}",
+            f"value:success={success_total}, errors={errors_total}, throttles_w_retry={throttles_w_retry_total}",
             f"value:avg_ru_per_operation={avg_ru_per_operation:.2f}",
         ]
     )
@@ -629,17 +655,15 @@ def _print_parent_result(
     extra: dict | None = None,
     *,
     total_elapsed_time_sec: float | None = None,
-    data_load_time_sec: float = 0.0,
 ) -> None:
     success_total = sum(result["success"] for result in results.values())
     errors_total = sum(result["errors"] for result in results.values())
     docs_completed = success_total + errors_total
-    throttles_total = sum(result["throttles"] for result in results.values())
+    throttles_w_retry_total = sum(result["throttles_w_retry"] for result in results.values())
     create_item_attempts = sum(result.get("create_item_attempts", 0) for result in results.values())
     create_item_failure_attempts = sum(result.get("create_item_failure_attempts", 0) for result in results.values())
     insert_time_sec = _result_elapsed(results)
     total_elapsed_time_sec = total_elapsed_time_sec if total_elapsed_time_sec is not None else insert_time_sec
-    other_overhead_sec = total_elapsed_time_sec - insert_time_sec - data_load_time_sec
     completed_clients = len(results)
     fallback_throughput = _safe_div(success_total, insert_time_sec)
     throughput_samples = _samples_or_fallback(_aggregate_throughput_samples(results), fallback_throughput)
@@ -657,8 +681,6 @@ def _print_parent_result(
     metrics = {
         "total_elapsed_time_sec": f"{total_elapsed_time_sec:.2f}",
         "insert_time_sec": f"{insert_time_sec:.2f}",
-        "data_load_time_sec": f"{data_load_time_sec:.2f}",
-        "other_overhead_sec": f"{other_overhead_sec:.2f}",
         "metrics_sample_interval_sec": f"{METRICS_SAMPLE_INTERVAL_SEC:.2f}",
         "metrics_timing_sample_interval": METRICS_TIMING_SAMPLE_INTERVAL,
         "capture_ru_charges": str(CAPTURE_RU_CHARGES).lower(),
@@ -667,7 +689,7 @@ def _print_parent_result(
         "docs_completed": docs_completed,
         "success_total": success_total,
         "errors_total": errors_total,
-        "throttles_total": throttles_total,
+        "throttles_w_retry_total": throttles_w_retry_total,
         "create_item_attempts_total": create_item_attempts,
         "create_item_failure_attempts_total": create_item_failure_attempts,
         "throughput_sample_count": len(throughput_samples),
@@ -678,14 +700,14 @@ def _print_parent_result(
     throughput_mean = float(throughput_summary["throughput_docs_per_sec_mean"])
     metrics.update(
         {
-            "throughput_docs_per_sec_current": f"{current_throughput:.2f}",
-            "throughput_docs_per_sec_per_client_current": f"{_safe_div(current_throughput, max(CLIENT_PROCESSES, 1)):.2f}",
-            "throughput_docs_per_sec_mean": throughput_summary["throughput_docs_per_sec_mean"],
-            "throughput_docs_per_sec_per_client_mean": f"{_safe_div(throughput_mean, max(CLIENT_PROCESSES, 1)):.2f}",
-            "throughput_docs_per_sec_max": throughput_summary["throughput_docs_per_sec_max"],
+            "current_docs_per_sec": f"{current_throughput:.2f}",
+            "current_docs_per_sec_per_client": f"{_safe_div(current_throughput, max(CLIENT_PROCESSES, 1)):.2f}",
+            "mean_docs_per_sec": throughput_summary["throughput_docs_per_sec_mean"],
+            "mean_docs_per_sec_per_client": f"{_safe_div(throughput_mean, max(CLIENT_PROCESSES, 1)):.2f}",
+            "max_docs_per_sec": throughput_summary["throughput_docs_per_sec_max"],
         }
     )
-    metrics.update(_percentile_summary(service_times, "service_time_ms"))
+    metrics.update(_timing_summary(service_times, "service_time_ms"))
     metrics.update(
         {
             "bulk_size": BULK_SIZE,
