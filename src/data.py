@@ -6,12 +6,13 @@ import asyncio
 import bz2
 import json
 import multiprocessing as mp
+import random
 import time
 import traceback
 from os import urandom
 from pathlib import Path
 
-from config import DOC_JSON_FORMAT, PARTITION_KEY_FIELD, READ_BATCH_SIZE, REPLACE_PARTITION_KEY_WITH_GUID
+from config import DOC_JSON_FORMAT, FAKE_DATA_VECTOR_DIM, PARTITION_KEY_FIELD, READ_BATCH_SIZE
 
 try:
     import ijson
@@ -31,13 +32,15 @@ def make_doc(i: int, payload: str) -> dict:
     """Create one synthetic benchmark document.
 
     This is used in fake-data mode when the benchmark needs to exercise Cosmos writes without reading a source corpus.
-    Each generated document has a unique id, a numeric value, and a configurable payload string.
-    The shape is intentionally simple so throughput tests focus on write pressure rather than document generation complexity.
+    Each generated document has a unique id, a GUID ``docid`` partition key, a title, a text payload, and a randomly
+    generated ``emb`` embedding vector of ``FAKE_DATA_VECTOR_DIM`` floats in [-1, 1].
     """
     return {
         "id": _new_guid_id(),
-        "value": i,
-        "payload": payload,
+        "docid": _new_guid_id(),
+        "title": f"Document {i}",
+        "text": payload,
+        "emb": [round(random.uniform(-1.0, 1.0), 8) for _ in range(FAKE_DATA_VECTOR_DIM)],
     }
 
 
@@ -60,10 +63,7 @@ def _prepare_loaded_doc(
             f"Available fields: {', '.join(sorted(str(key) for key in doc.keys())[:20])}"
         )
 
-    prepared = dict(doc) if REPLACE_PARTITION_KEY_WITH_GUID else doc
-    if REPLACE_PARTITION_KEY_WITH_GUID:
-        prepared[PARTITION_KEY_FIELD] = _new_guid_id()
-
+    prepared = doc
     if "id" in prepared and prepared["id"]:
         if isinstance(prepared["id"], str):
             return prepared

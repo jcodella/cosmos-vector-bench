@@ -2,6 +2,8 @@
 
 These scenarios benchmark Cosmos DB vector document ingestion with the [ESRally](https://esrally.readthedocs.io/) OpenAI vector corpus.
 
+The run commands below use the Python implementation (`main.py`). Each command has a .NET equivalent that takes the same arguments; see [.NET alternative](#net-alternative).
+
 ## Dataset
 
 Use this source file:
@@ -40,6 +42,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 az login
+```
+
+To run the scenarios with the .NET implementation instead, install the [.NET 9 SDK](https://dotnet.microsoft.com/download), sign in with `az login` when `COSMOS_KEY` is blank, and build the project:
+
+```powershell
+dotnet build .\src_dotnet\CosmosVectorBench.csproj -c Release
 ```
 
 ### Cosmos DB Permissions
@@ -124,7 +132,6 @@ DOC_JSON_PATH=./data/open_ai_corpus-initial-indexing.json
 DOC_JSON_FORMAT=jsonl
 
 PARTITION_KEY_FIELD=docid
-REPLACE_PARTITION_KEY_WITH_GUID=false
 DOC_QUEUE_MULTIPLIER=30
 MAX_CONCURRENCY=30
 COSMOS_ERROR_SAMPLE_LIMIT=0
@@ -295,6 +302,54 @@ resourceGroup='<account-resource-group-name>'
 az deployment group create --resource-group "$resourceGroup" --parameters ./scenarios/infra/config-5-quantizedFlat.bicepparam
 ./.venv/bin/python ./main.py --bulk-size 10 --num-clients 40 --total-docs 90000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s5-quantizedFlat
 ```
+
+### Config 6
+
+Windows PowerShell:
+
+```powershell
+$resourceGroup = '<account-resource-group-name>'
+
+az deployment group create --resource-group $resourceGroup --parameters .\scenarios\infra\config-6-quantizedFlat.bicepparam
+.\.venv\Scripts\python.exe .\main.py --bulk-size 120 --num-clients 100 --total-docs 2000000 --data-path .\data\open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
+```
+
+macOS/Linux:
+
+```bash
+resourceGroup='<account-resource-group-name>'
+
+az deployment group create --resource-group "$resourceGroup" --parameters ./scenarios/infra/config-6-quantizedFlat.bicepparam
+./.venv/bin/python ./main.py --bulk-size 120 --num-clients 100 --total-docs 2000000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
+```
+
+### .NET alternative
+
+Every scenario run command above has a .NET equivalent. Provision the container with the same `az deployment group create` command, then replace the `python ./main.py ...` invocation with the .NET project, passing the same arguments after `--`. Provisioning, container names, configs, and the decompressed dataset are identical; only the benchmark client changes.
+
+The .NET implementation uses the native Cosmos SDK `AllowBulkExecution` write path and in-process logical clients. It reads the decompressed `.json` file only (`.bz2` input is not supported).
+
+For example, Config 1 with the .NET client:
+
+Windows PowerShell:
+
+```powershell
+$resourceGroup = '<account-resource-group-name>'
+
+az deployment group create --resource-group $resourceGroup --parameters .\scenarios\infra\config-1-quantizedFlat.bicepparam
+dotnet run --project .\src_dotnet\CosmosVectorBench.csproj -c Release -- --bulk-size 18 --num-clients 10 --total-docs 180000 --data-path .\data\open_ai_corpus-initial-indexing.json --container-name s1-quantizedFlat
+```
+
+macOS/Linux:
+
+```bash
+resourceGroup='<account-resource-group-name>'
+
+az deployment group create --resource-group "$resourceGroup" --parameters ./scenarios/infra/config-1-quantizedFlat.bicepparam
+dotnet run --project ./src_dotnet/CosmosVectorBench.csproj -c Release -- --bulk-size 18 --num-clients 10 --total-docs 180000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s1-quantizedFlat
+```
+
+For Configs 2-6, keep the same `--bulk-size`, `--num-clients`, `--total-docs`, and `--container-name` values shown in each scenario above and the matching `.bicepparam` file.
 
 ## Reading Results
 
