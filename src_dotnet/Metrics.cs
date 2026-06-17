@@ -90,6 +90,8 @@ public sealed record MetricSnapshot
     public required double ServiceTimeP99Ms { get; init; }
     public required double RequestChargeTotal { get; init; }
     public required long RequestChargeObservations { get; init; }
+    public required IReadOnlyDictionary<string, double> PartitionKeyRangeRequestsPerSec { get; init; }
+    public required long PartitionKeyRangeMissingHeaderCount { get; init; }
 }
 
 /// <summary>Final per-worker result snapshot used to build the aggregate parent result and CSV row.</summary>
@@ -151,6 +153,11 @@ public sealed class WorkerMetrics
     private double _requestChargeTotal;
     private long _requestChargeObservations;
 
+    private readonly Dictionary<string, long> _partitionKeyRangeRequestCounts = [];
+    private Dictionary<string, long> _partitionKeyRangeLastSampleCounts = [];
+    private Dictionary<string, double> _partitionKeyRangeRequestsPerSec = [];
+    private long _partitionKeyRangeMissingHeaderCount;
+
     public int CosmosErrorSamplesLogged;
 
     public WorkerMetrics(BenchmarkConfig config) => _config = config;
@@ -165,6 +172,7 @@ public sealed class WorkerMetrics
                 _startedEpoch = startedEpoch;
                 _throughputLastSampleAt = startedAt;
                 _throughputLastSampleSuccess = _success;
+                _partitionKeyRangeLastSampleCounts = new Dictionary<string, long>(_partitionKeyRangeRequestCounts);
             }
         }
     }
@@ -229,6 +237,22 @@ public sealed class WorkerMetrics
         {
             _requestChargeTotal += charge;
             _requestChargeObservations++;
+        }
+    }
+
+    /// <summary>Records one create attempt against its Cosmos partition key range, or a missing-header observation.</summary>
+    public void RecordPartitionKeyRangeRequest(string? partitionKeyRangeId)
+    {
+        lock (_sync)
+        {
+            if (string.IsNullOrEmpty(partitionKeyRangeId))
+            {
+                _partitionKeyRangeMissingHeaderCount++;
+                return;
+            }
+
+            _partitionKeyRangeRequestCounts.TryGetValue(partitionKeyRangeId, out long current);
+            _partitionKeyRangeRequestCounts[partitionKeyRangeId] = current + 1;
         }
     }
 
@@ -303,6 +327,7 @@ public sealed class WorkerMetrics
             {
                 _throughputLastSampleAt = now;
                 _throughputLastSampleSuccess = success;
+                _partitionKeyRangeLastSampleCounts = new Dictionary<string, long>(_partitionKeyRangeRequestCounts);
                 return;
             }
 
@@ -310,6 +335,8 @@ public sealed class WorkerMetrics
             {
                 _throughputLastSampleAt = now;
                 _throughputLastSampleSuccess = success;
+                _partitionKeyRangeLastSampleCounts = new Dictionary<string, long>(_partitionKeyRangeRequestCounts);
+                _partitionKeyRangeRequestsPerSec = [];
                 return;
             }
 
@@ -325,8 +352,25 @@ public sealed class WorkerMetrics
                 _throughputSamples.Add(successDelta / elapsed);
             }
 
+            if (_config.PartitionKeyRangeRpsEnabled && elapsed > 0)
+            {
+                var perSec = new Dictionary<string, double>();
+                foreach ((string rangeId, long count) in _partitionKeyRangeRequestCounts)
+                {
+                    _partitionKeyRangeLastSampleCounts.TryGetValue(rangeId, out long last);
+                    long delta = count - last;
+                    if (delta > 0)
+                    {
+                        perSec[rangeId] = delta / elapsed;
+                    }
+                }
+
+                _partitionKeyRangeRequestsPerSec = perSec;
+            }
+
             _throughputLastSampleAt = now;
             _throughputLastSampleSuccess = success;
+            _partitionKeyRangeLastSampleCounts = new Dictionary<string, long>(_partitionKeyRangeRequestCounts);
         }
     }
 
@@ -394,6 +438,8 @@ public sealed class WorkerMetrics
                 ServiceTimeP99Ms = Stats.Percentile(sortedServiceTimes, 0.99),
                 RequestChargeTotal = _requestChargeTotal,
                 RequestChargeObservations = _requestChargeObservations,
+                PartitionKeyRangeRequestsPerSec = new Dictionary<string, double>(_partitionKeyRangeRequestsPerSec),
+                PartitionKeyRangeMissingHeaderCount = _partitionKeyRangeMissingHeaderCount,
             };
         }
     }

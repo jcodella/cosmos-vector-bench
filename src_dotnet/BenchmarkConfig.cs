@@ -26,6 +26,7 @@ public sealed class BenchmarkConfig
     public bool CaptureRuCharges { get; private init; }
     public bool EnableContentResponseOnWrite { get; private init; }
     public bool UseStreamWriter { get; private init; }
+    public bool PartitionKeyRangeRpsEnabled { get; private init; }
     public int PayloadBytes { get; private init; }
     public int FakeDataVectorDim { get; private init; }
 
@@ -109,6 +110,7 @@ public sealed class BenchmarkConfig
             CaptureRuCharges = BoolEnv("CAPTURE_RU_CHARGES", true),
             EnableContentResponseOnWrite = BoolEnv("ENABLE_CONTENT_RESPONSE_ON_WRITE", false),
             UseStreamWriter = BoolEnv("USE_STREAM_WRITER", true),
+            PartitionKeyRangeRpsEnabled = BoolEnv("PARTITION_KEY_RANGE_RPS_ENABLED", false),
             PayloadBytes = IntEnv("PAYLOAD_BYTES", 5000, 0),
             FakeDataVectorDim = IntEnv("FAKE_DATA_VECTOR_DIM", 1536, 0),
             LiveIntervalSec = liveInterval,

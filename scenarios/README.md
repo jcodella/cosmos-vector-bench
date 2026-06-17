@@ -21,6 +21,9 @@ Download the `.bz2` file and decompress it once before running scenarios. The be
 | 3 | 30 | 30 | 1.33 | 40 | 1,200 |
 | 4 | 10 | 40 | 2.5 | 100 | 1,000 |
 | 5 | 40 | 10 | 0.2 | 2 | 80 |
+| 6 | 50 | 240 | max | — | — |
+
+Scenario 6 is an unthrottled max-throughput run backed by a 1,000,000 RU/s (autoscale max) container, so it has no per-client rate target. With 50 clients at a 240 `bulk_size`, it keeps roughly 12,000 document writes (50 × 240) in flight at once.
 
 ## One-Time Setup
 
@@ -311,7 +314,7 @@ Windows PowerShell:
 $resourceGroup = '<account-resource-group-name>'
 
 az deployment group create --resource-group $resourceGroup --parameters .\scenarios\infra\config-6-quantizedFlat.bicepparam
-.\.venv\Scripts\python.exe .\main.py --bulk-size 120 --num-clients 100 --total-docs 2000000 --data-path .\data\open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
+.\.venv\Scripts\python.exe .\main.py --bulk-size 240 --num-clients 50 --total-docs 2000000 --data-path .\data\open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
 ```
 
 macOS/Linux:
@@ -320,7 +323,7 @@ macOS/Linux:
 resourceGroup='<account-resource-group-name>'
 
 az deployment group create --resource-group "$resourceGroup" --parameters ./scenarios/infra/config-6-quantizedFlat.bicepparam
-./.venv/bin/python ./main.py --bulk-size 120 --num-clients 100 --total-docs 2000000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
+./.venv/bin/python ./main.py --bulk-size 240 --num-clients 50 --total-docs 2000000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
 ```
 
 ### .NET alternative

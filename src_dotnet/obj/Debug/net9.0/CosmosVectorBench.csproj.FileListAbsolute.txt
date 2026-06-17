@@ -54,3 +54,4 @@ C:\Users\jacodel\github\jcodella\cosmos-vector-bench\src_dotnet\obj\Debug\net9.0
 C:\Users\jacodel\github\jcodella\cosmos-vector-bench\src_dotnet\obj\Debug\net9.0\cosmos-vector-bench.pdb
 C:\Users\jacodel\github\jcodella\cosmos-vector-bench\src_dotnet\obj\Debug\net9.0\CosmosVectorBench.genruntimeconfig.cache
 C:\Users\jacodel\github\jcodella\cosmos-vector-bench\src_dotnet\obj\Debug\net9.0\ref\cosmos-vector-bench.dll
+C:\Users\jacodel\github\jcodella\cosmos-vector-bench\src_dotnet\bin\Debug\net9.0\Newtonsoft.Json.dll

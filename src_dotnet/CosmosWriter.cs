@@ -25,6 +25,13 @@ public sealed class CosmosWriter
         HttpStatusCode.GatewayTimeout,           // 504
     ];
 
+    private static readonly string[] PartitionKeyRangeHeaderNames =
+    [
+        "x-ms-documentdb-partitionkeyrangeid",
+        "x-ms-partition-key-range-id",
+        "x-ms-documentdb-partition-key-range-id",
+    ];
+
     private readonly BenchmarkConfig _config;
     private readonly Container _container;
     private readonly string _partitionKeyField;
@@ -71,6 +78,11 @@ public sealed class CosmosWriter
                         requestChargeTotal += response.RequestCharge;
                     }
 
+                    if (_config.PartitionKeyRangeRpsEnabled)
+                    {
+                        metrics.RecordPartitionKeyRangeRequest(PartitionKeyRangeIdFromHeaders(response.Headers));
+                    }
+
                     metrics.RecordSuccess();
                     metrics.RecordRequestCharge(requestChargeTotal);
                     break;
@@ -84,6 +96,11 @@ public sealed class CosmosWriter
                     if (_config.CaptureRuCharges)
                     {
                         requestChargeTotal += ex.RequestCharge;
+                    }
+
+                    if (_config.PartitionKeyRangeRpsEnabled)
+                    {
+                        metrics.RecordPartitionKeyRangeRequest(PartitionKeyRangeIdFromHeaders(ex.Headers));
                     }
 
                     if ((int)ex.StatusCode == 429)
@@ -209,6 +226,7 @@ public sealed class CosmosWriter
                 bool success;
                 double charge = 0.0;
                 TimeSpan? retryAfter = null;
+                string? partitionKeyRangeId = null;
 
                 try
                 {
@@ -224,6 +242,11 @@ public sealed class CosmosWriter
                         charge = response.Headers.RequestCharge;
                     }
 
+                    if (_config.PartitionKeyRangeRpsEnabled)
+                    {
+                        partitionKeyRangeId = PartitionKeyRangeIdFromHeaders(response.Headers);
+                    }
+
                     retryAfter = ParseRetryAfter(response.Headers);
                 }
                 catch (CosmosException ex)
@@ -235,6 +258,11 @@ public sealed class CosmosWriter
                         charge = ex.RequestCharge;
                     }
 
+                    if (_config.PartitionKeyRangeRpsEnabled)
+                    {
+                        partitionKeyRangeId = PartitionKeyRangeIdFromHeaders(ex.Headers);
+                    }
+
                     retryAfter = ex.RetryAfter;
                 }
 
@@ -242,6 +270,11 @@ public sealed class CosmosWriter
                 finishEpoch = Clock.Epoch;
                 attemptWindows.Add((finish - attemptStart) * 1000.0);
                 requestChargeTotal += charge;
+
+                if (_config.PartitionKeyRangeRpsEnabled)
+                {
+                    metrics.RecordPartitionKeyRangeRequest(partitionKeyRangeId);
+                }
 
                 if (success)
                 {
@@ -414,6 +447,25 @@ public sealed class CosmosWriter
         if (!string.IsNullOrEmpty(value) && double.TryParse(value, out double ms))
         {
             return TimeSpan.FromMilliseconds(ms);
+        }
+
+        return null;
+    }
+
+    private static string? PartitionKeyRangeIdFromHeaders(Headers? headers)
+    {
+        if (headers is null)
+        {
+            return null;
+        }
+
+        foreach (string name in PartitionKeyRangeHeaderNames)
+        {
+            string? value = headers.Get(name);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
         }
 
         return null;

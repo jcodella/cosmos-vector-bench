@@ -97,12 +97,46 @@ public sealed class MetricsReporter
             $"    current_docs/sec={F2(throughputCurrent)}, current_docs/sec/client={F2(Stats.SafeDiv(throughputCurrent, Math.Max(clientProcesses, 1)))}",
             $"    mean_docs/sec={F2(meanThroughput)}, mean_docs/sec/client={F2(Stats.SafeDiv(meanThroughput, Math.Max(clientProcesses, 1)))}",
             $"    max_docs/sec={F2(maxThroughput)}",
+        };
+
+        if (_config.PartitionKeyRangeRpsEnabled)
+        {
+            var rangeRps = new SortedDictionary<string, double>(StringComparer.Ordinal);
+            long missingHeaderCount = 0;
+            foreach (MetricSnapshot snapshot in snapshots)
+            {
+                missingHeaderCount += snapshot.PartitionKeyRangeMissingHeaderCount;
+                foreach ((string rangeId, double rps) in snapshot.PartitionKeyRangeRequestsPerSec)
+                {
+                    rangeRps.TryGetValue(rangeId, out double current);
+                    rangeRps[rangeId] = current + rps;
+                }
+            }
+
+            lines.Add("  Partition key range stats");
+            if (rangeRps.Count > 0)
+            {
+                foreach ((string rangeId, double rps) in rangeRps)
+                {
+                    lines.Add($"    pkrange_{rangeId}=ops_per_sec={F2(rps)}");
+                }
+            }
+            else
+            {
+                lines.Add("    observed_ranges=0");
+            }
+
+            lines.Add($"    missing_header_count={missingHeaderCount}");
+        }
+
+        lines.AddRange(
+        [
             "  Timing",
             $"    service_time_ms_mean={F2(serviceMean)}, service_time_ms_p50={F2(serviceP50)}, service_time_ms_p90={F2(serviceP90)}, service_time_ms_p99={F2(serviceP99)}",
             "  Responses",
             $"    success={successTotal}, errors={errorsTotal}, throttles_w_retry={throttlesTotal}",
             $"    avg_ru_per_operation={F2(avgRu)}",
-        };
+        ]);
 
         return string.Join("\n", lines);
     }
