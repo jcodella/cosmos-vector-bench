@@ -1,8 +1,15 @@
 # Cosmos DB Vector Write Throughput Test
 
-This repository contains a standalone Python throughput test for writing documents to Azure Cosmos DB. It can either generate synthetic documents or stream a JSON/JSONL corpus, including `.bz2`-compressed input. Use `src/download_data.py` to download and decompress the source data into `data/` before running throughput tests; compressed input can limit app-side throughput because the loader must decompress records during the run.
+This repository contains a standalone throughput test for writing documents to Azure Cosmos DB. It can either generate synthetic documents or stream a JSON/JSONL corpus, including `.bz2`-compressed input. Use `src/download_data.py` to download and decompress the source data into `data/` before running throughput tests; compressed input can limit app-side throughput because the loader must decompress records during the run.
+
+Two interchangeable implementations are provided. Both read the same root `.env`, the same scenario configs, and the same data files, and both write metrics CSVs with identical columns into `results/`:
+
+- **Python** (`src/`, `main.py`) is the reference implementation.
+- **.NET** (`src_dotnet/`) is an alternative .NET 9 port that uses the native Cosmos SDK bulk-execution API. See [.NET Implementation (Alternative)](#net-implementation-alternative).
 
 ## File Layout
+
+Python implementation:
 
 - `main.py` is the root command entrypoint and accepts CLI overrides for common benchmark settings.
 - `src/benchmark.py` is the internal benchmark entrypoint.
@@ -12,6 +19,16 @@ This repository contains a standalone Python throughput test for writing documen
 - `src/config.py` loads repo-root `.env` and benchmark configuration.
 - `src/download_data.py` downloads source datasets into `data/` and can optionally decompress `.bz2` files.
 - `counts.py` streams a JSON/JSONL corpus and compares total records with unique `docid` values.
+
+.NET implementation (`src_dotnet/`):
+
+- `Program.cs` is the command entrypoint and parses the same CLI overrides as `main.py`.
+- `Benchmark.cs` and `Worker.cs` contain worker orchestration for fake and file modes.
+- `CosmosWriter.cs` contains the Cosmos write path (uses `AllowBulkExecution`).
+- `CosmosClientFactory.cs` builds the Cosmos client and System.Text.Json serializer.
+- `DataSource.cs` contains the fake-doc generator and JSON/JSONL document streaming.
+- `BenchmarkConfig.cs` loads the same repo-root `.env` and benchmark configuration.
+- `Metrics.cs` and `MetricsReporter.cs` track metrics and write the same CSV columns.
 
 ## Scenarios
 
@@ -165,6 +182,57 @@ For example:
 results/052326-143508-clients-40-bulk-30-maxdocs-all.csv
 ```
 
+## .NET Implementation (Alternative)
+
+The `src_dotnet/` project is a .NET 9 port of the benchmark. It reads the same root `.env`, accepts the same CLI overrides as `main.py`, uses the same scenario configs and decompressed data files, and writes metrics CSVs with the same columns into `results/`. Use it when you prefer a .NET client or want to compare client-runtime behavior.
+
+Differences from the Python implementation:
+
+- It uses the native Cosmos SDK `AllowBulkExecution` write path (concurrent point creates batched by the SDK) instead of the Python per-item path, so raw docs/sec is not directly comparable between the two; the CSV schema still matches for side-by-side runs.
+- Concurrency uses in-process logical clients (`NUM_CLIENTS` async worker loops) rather than child processes.
+- Input must be a decompressed `.json`/`.jsonl` file. Reading `.bz2` directly is not supported, so download and decompress first (`src/download_data.py`).
+
+### Prerequisites
+
+Install the [.NET 9 SDK](https://dotnet.microsoft.com/download). If `COSMOS_KEY` is blank, sign in for `DefaultAzureCredential` authentication. The Cosmos DB permissions described in [Cosmos DB Permissions](#cosmos-db-permissions) apply to the .NET implementation as well.
+
+```powershell
+az login
+dotnet build .\src_dotnet\CosmosVectorBench.csproj -c Release
+```
+
+### Run the benchmark
+
+The CLI arguments match `main.py`: `--num-clients`, `--bulk-size`, `--total-docs`, `--data-path`, and `--container-name`. Pass them after `--`.
+
+Fake mode (set `DATA_TYPE=fake` in `.env`):
+
+Windows PowerShell:
+
+```powershell
+dotnet run --project .\src_dotnet\CosmosVectorBench.csproj -c Release -- --num-clients 4
+```
+
+macOS/Linux:
+
+```bash
+dotnet run --project ./src_dotnet/CosmosVectorBench.csproj -c Release -- --num-clients 4
+```
+
+File mode:
+
+Windows PowerShell:
+
+```powershell
+dotnet run --project .\src_dotnet\CosmosVectorBench.csproj -c Release -- --num-clients 40 --bulk-size 30 --total-docs 100000 --data-path .\data\data-file.json --container-name benchmark-100k
+```
+
+macOS/Linux:
+
+```bash
+dotnet run --project ./src_dotnet/CosmosVectorBench.csproj -c Release -- --num-clients 40 --bulk-size 30 --total-docs 100000 --data-path ./data/data-file.json --container-name benchmark-100k
+```
+
 ## Use Fake Documents
 
 Fake mode is useful for checking auth, container access, write throughput, and basic throttling without a large source file.
@@ -271,7 +339,7 @@ Leave it blank for the full file:
 MAX_TOTAL_DOCS=
 ```
 
-Cosmos DB requires every item to have an `id`, and file-input records must contain the configured `PARTITION_KEY_FIELD`. If `REPLACE_PARTITION_KEY_WITH_GUID=true`, the writer replaces that partition key field with a generated GUID for each loaded file document before upload. If a source document does not already have an `id`, the writer copies the final partition key value into `id`, so the source file does not need to be modified.
+Cosmos DB requires every item to have an `id`, and file-input records must contain the configured `PARTITION_KEY_FIELD`. If a source document does not already have an `id`, the writer copies the partition key value into `id`, so the source file does not need to be modified.
 
 ## CLI Overrides
 
@@ -317,7 +385,6 @@ The benchmark loads `.env` and `main.py` can override common values from CLI arg
 | `BULK_SIZE` | int | `30` | Number of documents each worker pulls into a local bulk before scheduling uploads. |
 | `MAX_TOTAL_DOCS` | optional int | `100000` or blank | Optional cap on how many documents to upload. Blank means no cap for JSON mode. |
 | `PARTITION_KEY_FIELD` | string | `docid` | Required field for every file-input document and target Cosmos container partition key path, without the leading slash. Used in diagnostics, must match the existing container policy, and is copied to Cosmos `id` when a source document is missing `id`. |
-| `REPLACE_PARTITION_KEY_WITH_GUID` | bool | `false` | When `true`, replaces the configured partition key field with a generated GUID for each loaded JSON/JSONL/.bz2 file document before upload. |
 | `COSMOS_ERROR_SAMPLE_LIMIT` | int | `3` | Number of detailed Cosmos write failures to print per worker. |
 | `MAX_CONCURRENCY` / `MAX_IN_FLIGHT` | int | `30` | Max concurrent `create_item` calls per worker process. Values below `1` are treated as auto and resolve to `ceil(1.5 * BULK_SIZE)`. Total possible in-flight writes are roughly `NUM_CLIENTS * MAX_CONCURRENCY`. |
 | `MAX_INSERT_RETRIES` | int | `3` | Number of quick retries for throttled or transient Cosmos write failures. Non-transient failures such as duplicate item conflicts fail fast. |
