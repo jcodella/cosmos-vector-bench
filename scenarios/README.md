@@ -22,8 +22,11 @@ Download the `.bz2` file and decompress it once before running scenarios. The be
 | 4 | 10 | 40 | 2.5 | 100 | 1,000 |
 | 5 | 40 | 10 | 0.2 | 2 | 80 |
 | 6 | 50 | 240 | max | — | — |
+| 7 | 75 | 500 | max | — | — |
 
 Scenario 6 is an unthrottled max-throughput run backed by a 1,000,000 RU/s (autoscale max) container, so it has no per-client rate target. With 50 clients at a 240 `bulk_size`, it keeps roughly 12,000 document writes (50 × 240) in flight at once.
+
+Scenario 7 is an unthrottled max-throughput run backed by a 2,000,000 RU/s (autoscale max) container, so it has no per-client rate target. With 75 clients at a 500 `bulk_size`, it keeps roughly 37,500 document writes (75 × 500) in flight at once.
 
 ## One-Time Setup
 
@@ -326,6 +329,26 @@ az deployment group create --resource-group "$resourceGroup" --parameters ./scen
 ./.venv/bin/python ./main.py --bulk-size 240 --num-clients 50 --total-docs 2000000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s6-quantizedFlat
 ```
 
+### Config 7
+
+Windows PowerShell:
+
+```powershell
+$resourceGroup = '<account-resource-group-name>'
+
+az deployment group create --resource-group $resourceGroup --parameters .\scenarios\infra\config-7-quantizedFlat.bicepparam
+.\.venv\Scripts\python.exe .\main.py --bulk-size 500 --num-clients 75 --total-docs 2000000 --data-path .\data\open_ai_corpus-initial-indexing.json --container-name s7-quantizedFlat
+```
+
+macOS/Linux:
+
+```bash
+resourceGroup='<account-resource-group-name>'
+
+az deployment group create --resource-group "$resourceGroup" --parameters ./scenarios/infra/config-7-quantizedFlat.bicepparam
+./.venv/bin/python ./main.py --bulk-size 500 --num-clients 75 --total-docs 2000000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s7-quantizedFlat
+```
+
 ### .NET alternative
 
 Every scenario run command above has a .NET equivalent. Provision the container with the same `az deployment group create` command, then replace the `python ./main.py ...` invocation with the .NET project, passing the same arguments after `--`. Provisioning, container names, configs, and the decompressed dataset are identical; only the benchmark client changes.
@@ -352,7 +375,7 @@ az deployment group create --resource-group "$resourceGroup" --parameters ./scen
 dotnet run --project ./src_dotnet/CosmosVectorBench.csproj -c Release -- --bulk-size 18 --num-clients 10 --total-docs 180000 --data-path ./data/open_ai_corpus-initial-indexing.json --container-name s1-quantizedFlat
 ```
 
-For Configs 2-6, keep the same `--bulk-size`, `--num-clients`, `--total-docs`, and `--container-name` values shown in each scenario above and the matching `.bicepparam` file.
+For Configs 2-7, keep the same `--bulk-size`, `--num-clients`, `--total-docs`, and `--container-name` values shown in each scenario above and the matching `.bicepparam` file.
 
 ## Reading Results
 
