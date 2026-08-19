@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("cosmos-vector-bench")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+11a2e1e66b23d9595f08d0889206fce0d1a9bfdd")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e12b202174e730a85e9abb9dc0bbe6f610e3f332")]
 [assembly: System.Reflection.AssemblyProductAttribute("cosmos-vector-bench")]
 [assembly: System.Reflection.AssemblyTitleAttribute("cosmos-vector-bench")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
